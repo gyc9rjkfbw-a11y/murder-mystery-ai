@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import AppTopBar from '@/components/AppTopBar.vue'
 import InstallCard from '@/components/InstallCard.vue'
 import ProfileCard from '@/components/ProfileCard.vue'
@@ -8,6 +8,11 @@ import { testConnection, type AiProvider } from '@/services/aiEngine'
 import { SYSTEM_PROMPT } from '@/services/systemPrompt'
 import { useSettingsStore } from '@/stores/settings'
 import SheetModal from '@/components/SheetModal.vue'
+import {
+  loadScriptHistory,
+  persistScriptHistory,
+  type ScriptHistoryStorage,
+} from '@/services/scriptHistory'
 
 const settings = useSettingsStore()
 const toast = useToast()
@@ -15,8 +20,32 @@ const toast = useToast()
 const testing = ref(false)
 const testResult = ref('')
 const promptOpen = ref(false)
+const historyCount = ref(0)
 
 const ai = computed(() => settings.state.ai)
+
+function scriptHistoryStorage(): ScriptHistoryStorage {
+  return localStorage
+}
+
+function refreshHistoryCount(): void {
+  try {
+    historyCount.value = loadScriptHistory(scriptHistoryStorage()).length
+  } catch {
+    historyCount.value = 0
+  }
+}
+
+function clearScriptHistory(): void {
+  if (!window.confirm('清空最近剧本记录？清空后，相同案件可能再次被生成。')) return
+  try {
+    persistScriptHistory(scriptHistoryStorage(), [])
+    refreshHistoryCount()
+    toast.info('最近剧本记录已清空')
+  } catch {
+    toast.error('无法清除本地剧本记录')
+  }
+}
 
 const providers: { key: AiProvider; title: string; desc: string }[] = [
   {
@@ -53,6 +82,8 @@ async function runTest() {
   if (res.ok) toast.success('连接正常')
   else toast.error('连接失败')
 }
+
+onMounted(refreshHistoryCount)
 </script>
 
 <template>
@@ -163,6 +194,20 @@ async function runTest() {
         <span class="tag" :class="settings.state.demoMode ? 'tag--gold' : ''">
           {{ settings.state.demoMode ? '已开启' : '已关闭' }}
         </span>
+      </div>
+    </section>
+
+    <section class="card card--flat">
+      <div class="list-row">
+        <div>
+          <div style="font-size: 14px">AI 剧本防重复</div>
+          <div class="tiny muted">
+            最近记录 {{ historyCount }} 局；相同案件会被拒绝并自动要求重写
+          </div>
+        </div>
+        <button class="mini-btn" :disabled="historyCount === 0" @click="clearScriptHistory">
+          清空记录
+        </button>
       </div>
     </section>
 

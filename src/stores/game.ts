@@ -25,9 +25,30 @@ import {
 } from '@/types/game'
 import { useSettingsStore } from './settings'
 import type { ClientMsg, SeatView } from '@/services/net/protocol'
+import {
+  addScriptHistory,
+  loadScriptHistory,
+  persistScriptHistory,
+  type ScriptHistoryStorage,
+} from '@/services/scriptHistory'
 
 const BOT_NAMES = ['林小满', '周砚', '苏泠', '陈默', '顾青梧', '白鹭', '沈知遥', '唐见山']
 const BOT_AVATARS = ['🎩', '🕰️', '🧣', '📻', '🪶', '🔮', '🥀', '🧤']
+const historyMemory = new Map<string, string>()
+const historyMemoryStorage: ScriptHistoryStorage = {
+  getItem: (key) => historyMemory.get(key) ?? null,
+  setItem: (key, value) => void historyMemory.set(key, value),
+  removeItem: (key) => void historyMemory.delete(key),
+}
+
+function scriptHistoryStore(): ScriptHistoryStorage {
+  try {
+    if (typeof localStorage !== 'undefined') return localStorage
+  } catch {
+    /* 隐私模式下退回进程内存储。 */
+  }
+  return historyMemoryStorage
+}
 
 /**
  * 联网桥：由 `stores/net.ts` 注入。
@@ -534,6 +555,8 @@ export const useGameStore = defineStore('game', () => {
 
     try {
       const ai = settings.state.ai
+      const historyStorage = scriptHistoryStore()
+      const history = loadScriptHistory(historyStorage)
       // 选了「真实大模型」却没填 Key：这一局是不可能成功的，直接给出可执行的失败说明，
       // 不再白等两次请求超时（下面的 catch 会走同一套文案与兜底按钮）。
       if (ai.provider === 'openai' && !String(ai.apiKey ?? '').trim()) {
@@ -546,10 +569,18 @@ export const useGameStore = defineStore('game', () => {
         playerCount: setup.playerCount,
         theme: setup.theme,
         config: { ...settings.state.ai },
+        uniqueness: {
+          nonce:
+            typeof crypto !== 'undefined' && 'randomUUID' in crypto
+              ? crypto.randomUUID()
+              : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          history,
+        },
         onProgress: (p) => {
           generating.progress = p
         },
       })
+      persistScriptHistory(historyStorage, addScriptHistory(history, result.pkg))
       state.script = result.pkg
       generating.provider = result.provider
       generating.rewrites = result.rewrites

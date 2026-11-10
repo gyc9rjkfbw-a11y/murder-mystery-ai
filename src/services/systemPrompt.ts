@@ -111,6 +111,11 @@ export const EXTENSION_INSTRUCTION = `【本项目扩展字段（在完成上述
 - "side_quests": ["独立支线任务"]，仅 6 人局需要，每个角色 1-2 条，与主线案件无关。
 这些字段用于前端的轮次推进、自由搜证与防边缘化机制，不得与 global_truth 冲突。`
 
+export interface UniquenessPromptContext {
+  nonce: string
+  avoid: { theme: string; murderer: string }[]
+}
+
 /** 各人数档位的字数要求文案 */
 function lengthRequirement(playerCount: number): string {
   const r = pacingFor(playerCount)
@@ -124,9 +129,24 @@ function lengthRequirement(playerCount: number): string {
 }
 
 /** 构造「开始游戏」的用户消息 */
-export function buildUserPrompt(playerCount: number, theme: string): string {
+export function buildUserPrompt(
+  playerCount: number,
+  theme: string,
+  uniqueness?: UniquenessPromptContext,
+): string {
   const t = theme.trim() || '悬疑推理'
   const r = pacingFor(playerCount)
+  const recent = (uniqueness?.avoid ?? [])
+    .slice(0, 10)
+    .map((item, index) => `${index + 1}. 题材「${item.theme}」/ 凶手「${item.murderer}」`)
+    .join('\n')
+  const uniqueRules = uniqueness
+    ? `\n【唯一性要求】
+本局唯一标识：${uniqueness.nonce}
+禁止重复最近已经使用过的案件。不得复用以下案件的角色姓名组合、凶手身份、背景、核心诡计、作案手法或关键线索：
+${recent || '暂无历史记录'}
+必须重新设计凶手、人物关系、核诡与关键物证；仅替换角色名或题材名不算新剧本。`
+    : ''
   return `开始游戏。玩家人数：${playerCount} 人。题材：${t}。
 
 要求：
@@ -135,6 +155,7 @@ export function buildUserPrompt(playerCount: number, theme: string): string {
 3. ${lengthRequirement(playerCount)}
 5. 本局共 ${r.maxRounds} 轮${r.searchRounds > 0 ? `，每轮之后有一轮搜证` : '，线索由系统按轮次发放'}；请按【多轮节奏与线索分批发放】准备三批线索。
 6. 只输出 JSON，不要 markdown 代码块，不要任何解释文字。
+${uniqueRules}
 
 ${EXTENSION_INSTRUCTION}`
 }

@@ -3,6 +3,7 @@ import { generateOfflineScript, type GenerateProgress } from './offlineEngine'
 import { pacingFor } from './rules'
 import { buildUserPrompt, SYSTEM_PROMPT } from './systemPrompt'
 import { isLengthViolation, isSideQuestViolation, validateScriptPackage } from './validator'
+import { findDuplicateScript, type ScriptHistoryEntry } from './scriptHistory'
 
 /** 生成进度（透传给 UI，避免各处重复 import） */
 export type { GenerateProgress }
@@ -39,6 +40,10 @@ export interface GenerateRequest {
   playerCount: number
   theme: string
   config: AiConfig
+  uniqueness?: {
+    nonce: string
+    history: ScriptHistoryEntry[]
+  }
   onProgress?: (p: GenerateProgress) => void
   signal?: AbortSignal
 }
@@ -97,6 +102,16 @@ ${
 4. 不要输出 markdown 代码块，不要任何解释文字。`
 }
 
+export function buildDuplicateRewriteInstruction(duplicateTheme: string): string {
+  return `【系统查重未通过，请重新设计】
+你上一次生成的案件与最近已经玩过的「${duplicateTheme}」在人物身份、凶手、核诡、手法、时间线或关键线索上重复。
+请完全重新设计本局：
+1. 更换凶手、核心诡计、作案手法、关键物证和至少三组人物关系。
+2. 不要只替换角色姓名、地名或题材名。
+3. 保留指定玩家人数、JSON 结构与全部校验要求。
+4. 只输出完整 JSON。`
+}
+
 async function callOpenAI(
   req: GenerateRequest,
   corrective?: string,
@@ -104,7 +119,15 @@ async function callOpenAI(
   const { config, playerCount, theme, signal } = req
   const url = config.baseUrl.replace(/\/+$/, '') + '/chat/completions'
   const userContent =
-    buildUserPrompt(playerCount, theme) + (corrective ? `\n\n${corrective}` : '')
+    buildUserPrompt(playerCount, theme, req.uniqueness
+      ? {
+          nonce: req.uniqueness.nonce,
+          avoid: req.uniqueness.history.map((item) => ({
+            theme: item.theme,
+            murderer: item.murderer,
+          })),
+        }
+      : undefined) + (corrective ? `\n\n${corrective}` : '')
 
   let res: Response
   try {
@@ -169,6 +192,19 @@ export async function generateWithOpenAI(req: GenerateRequest): Promise<Generati
 
     const check = validateScriptPackage(parsed, req.playerCount)
     if (check.ok && check.data) {
+      const duplicate = findDuplicateScript(check.data, req.uniqueness?.history ?? [])
+      if (duplicate) {
+        if (attempt === 0) {
+          rewrites += 1
+          warnings.push(`生成结果与最近对局「${duplicate.theme}」重复，已自动重新设计`)
+          raw = (await callOpenAI(req, buildDuplicateRewriteInstruction(duplicate.theme))).content
+          continue
+        }
+        throw new GenerationError('生成结果与最近对局重复', [
+          `系统检测到这次剧本与「${duplicate.theme}」重复。`,
+          '请换一个题材再试，或在设置中清空最近剧本记录后重启生成。',
+        ])
+      }
       return { pkg: check.data, provider: 'openai', raw, rewrites, warnings }
     }
 
@@ -197,6 +233,13 @@ export async function generateWithOffline(req: GenerateRequest): Promise<Generat
   if (!check.ok || !check.data) {
     // 内置库自身不合法属于开发期问题，直接抛出便于发现
     throw new GenerationError('内置剧本库未通过校验', check.errors)
+  }
+  const duplicate = findDuplicateScript(check.data, req.uniqueness?.history ?? [])
+  if (duplicate) {
+    throw new GenerationError('内置剧本与最近对局重复', [
+      `离线引擎的内置案件「${duplicate.theme}」最近已经玩过。`,
+      '离线引擎使用有限内置模板，无法保证无限不重复；请换一个完全不同的题材，或使用真实大模型生成全新案件。',
+    ])
   }
   return { pkg: check.data, provider: 'offline', rewrites: 0, warnings: [] }
 }
