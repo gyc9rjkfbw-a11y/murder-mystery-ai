@@ -1,0 +1,40 @@
+{
+  "name": "murder-mystery-ai",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "AI 剧本杀 —— 前端（Vue 3 + Vite + TypeScript 移动端 H5）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "preview": "vite preview --port 4173",
+    "server:build": "node node_modules/esbuild/bin/esbuild server/src/index.ts --bundle --platform=node --format=esm --alias:@=./src --outfile=server/dist/server.mjs --external:ws",
+    "server": "node server/dist/server.mjs",
+    "server:test": "node node_modules/esbuild/bin/esbuild server/test/room.test.ts --bundle --platform=node --format=esm --alias:@=./src --outfile=server/dist/test.mjs --external:ws && node server/dist/test.mjs",
+    "cert": "powershell -ExecutionPolicy Bypass -File scripts/make-lan-cert.ps1",
+    "server:tls": "node server/dist/server.mjs --tls-pfx .tools/lan-cert/lan.pfx --tls-pass mmai-lan",
+    "tunnel": ".tools\\cloudflared.exe tunnel --url http://127.0.0.1:5274 --no-autoupdate",
+    "verify:ui": "node .verify/ui-preview.mjs",
+    "verify:talk": "node .verify/talk.mjs",
+    "verify:gen": "node .verify/gen.mjs",
+    "verify:profile": "node .verify/profile.mjs",
+    "verify:pwa": "node .verify/pwa.mjs",
+    "app": "node scripts/make-app.mjs",
+    "icons": "powershell -ExecutionPolicy Bypass -File scripts/make-icons.ps1"
+  },
+  "dependencies": {
+    "pinia": "^2.2.6",
+    "vue": "^3.5.13",
+    "vue-router": "^4.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/ws": "^8.18.2",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.3",
+    "vue-tsc": "^2.1.10",
+    "ws": "^8.22.0"
+  }
+}

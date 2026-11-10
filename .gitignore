@@ -1,0 +1,50 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 构建产物
+dist/
+dist-ssr/
+*.local
+server/dist/
+
+# 房间服务器的玩家档案（真实昵称/头像/战绩，属于用户数据，绝不入库）
+server/data/
+profiles.json
+profiles.json.bak
+profiles.json.corrupt-*
+
+# 开发期自检脚本与截图（非应用代码）
+.verify/
+.shots/
+
+# 联调用的外部工具（cloudflared 等，几十 MB，不入库）
+.tools/
+
+# 编辑器
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+
+# 日志
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# 本地环境与私钥
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.cer
+
+# 系统与工具缓存
+*.log
+.cache/
+.temp/
+
+# 外部 Git 元数据目录（本机发布环境使用）
+.git/

@@ -1,0 +1,380 @@
+/* ==========================================================================
+   公屏文字面板（ChatPanel）—— 只放这一个组件特有的样式
+   --------------------------------------------------------------------------
+   设计系统全部复用 main.css 的变量与调性：墨黑 + 琥珀金 + 血色、圆角、细边框、微光。
+   这里的规则一律：
+     - 颜色只走 CSS 变量 / 与 main.css 同源的 rgba，不硬编码新色值；
+     - 类名统一 `chat__*`，不覆盖 main.css 已有 class，因此不受引入顺序影响；
+     - 动画自己定义（chatJumpIn / chatPulse），不依赖别的文件里的 @keyframes；
+     - 暗色是唯一主题，不写浅色分支。
+   本组件被塞进父级的底部弹层（.sheet）里，所以自己只吃 props.height，
+   不再自带背景/边框/safe-area 内边距，避免与 .sheet 重叠。
+   ========================================================================== */
+
+/* ---------- 根容器：固定高度 + 三段式（列表 / 快捷短语 / 输入） ---------- */
+.chat {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  font-family: var(--sans);
+  color: var(--text);
+}
+
+/* ---------- 消息列表 ---------- */
+.chat__main {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.chat__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* 往上翻历史时不要带动外层弹层一起滚 */
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px 2px 10px;
+  scrollbar-width: thin;
+}
+.chat__list::-webkit-scrollbar {
+  width: 4px;
+}
+.chat__list::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 999px;
+}
+
+/* 空状态：不空着一片，给一句引导（竖直居中） */
+.chat__empty {
+  margin: auto;
+  padding: 18px 18px 22px;
+  max-width: 280px;
+  text-align: center;
+}
+.chat__empty-icon {
+  font-size: 26px;
+  line-height: 1;
+  margin-bottom: 10px;
+  opacity: 0.75;
+}
+.chat__empty-text {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.9;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+/* ---------- 一条消息 ---------- */
+.chat__msg {
+  display: flex;
+  flex-direction: column;
+  max-width: 84%;
+}
+.chat__msg--other {
+  align-self: flex-start;
+  align-items: flex-start;
+}
+.chat__msg--mine {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+/* 同一个人连发：昵称只出现一次，间距收紧 */
+.chat__msg--cont {
+  margin-top: -4px;
+}
+
+.chat__name {
+  max-width: 100%;
+  margin: 0 3px 3px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat__name--mine {
+  color: var(--gold-dim);
+}
+
+/* 气泡：文字在左、时间压在右下角（同一行 flex + align-items: flex-end） */
+.chat__bubble {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: 100%;
+  padding: 8px 11px 7px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--panel), var(--panel-2));
+  color: #dcd9d3;
+  font-size: 14px;
+  line-height: 1.72;
+}
+.chat__msg--other .chat__bubble {
+  border-top-left-radius: 4px;
+}
+/* 自己的：偏金的深色气泡，靠右 */
+.chat__msg--mine .chat__bubble {
+  border-color: rgba(216, 169, 91, 0.3);
+  background: linear-gradient(180deg, rgba(216, 169, 91, 0.17), rgba(216, 169, 91, 0.06));
+  color: #f0e3c8;
+  border-top-right-radius: 4px;
+  box-shadow: 0 6px 18px rgba(216, 169, 91, 0.08);
+}
+
+/* 正文：保留换行、长串英文/URL 强制断行（渲染一律用 {{ }}，不用 v-html） */
+.chat__text {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.chat__time {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  padding-bottom: 1px;
+  font-size: 10px;
+  line-height: 1.4;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.chat__msg--mine .chat__time {
+  color: rgba(216, 169, 91, 0.72);
+}
+
+/* ---------- 「↓ 有新消息」 ---------- */
+.chat__jump {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  z-index: 2;
+  transform: translateX(-50%);
+  min-height: 34px;
+  padding: 6px 15px;
+  border-radius: 999px;
+  border: 1px solid rgba(216, 169, 91, 0.45);
+  background: rgba(22, 26, 38, 0.94);
+  backdrop-filter: blur(8px);
+  color: var(--gold);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+  animation: chatJumpIn 0.18s ease-out;
+}
+.chat__jump:active {
+  transform: translateX(-50%) scale(0.95);
+}
+@keyframes chatJumpIn {
+  from {
+    transform: translate(-50%, 8px);
+    opacity: 0;
+  }
+}
+
+/* ---------- 快捷短语：横向滚动的一排小 chip（点击只填入输入框） ---------- */
+.chat__chips {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  padding: 2px 0 9px;
+  scrollbar-width: none;
+}
+.chat__chips::-webkit-scrollbar {
+  display: none;
+}
+.chat__chip {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: 0.15s;
+}
+.chat__chip:active {
+  transform: scale(0.96);
+  border-color: rgba(216, 169, 91, 0.5);
+  color: var(--gold);
+}
+.chat__chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ---------- 输入区 ---------- */
+.chat__composer {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--line);
+  padding-top: 9px;
+}
+
+.chat__input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+/* 单行起步、自动增高到 3 行（高度由脚本按 scrollHeight 算，这里只给上下限） */
+.chat__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 46px;
+  max-height: 94px;
+  padding: 10px 13px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.32);
+  color: var(--text);
+  font-family: var(--sans);
+  /* 16px 是躲开 iOS 聚焦自动放大的下限 */
+  font-size: 16px;
+  line-height: 1.5;
+  resize: none;
+  outline: none;
+  overflow-y: auto;
+  -webkit-appearance: none;
+  transition: border-color 0.16s, box-shadow 0.16s;
+}
+.chat__input::placeholder {
+  color: var(--muted);
+}
+.chat__input:focus {
+  border-color: rgba(216, 169, 91, 0.5);
+  box-shadow: 0 0 0 3px rgba(216, 169, 91, 0.1);
+}
+.chat__input:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+/* 发送：圆形，46px（≥44px 可点区域） */
+.chat__send {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #e8c07a, var(--gold));
+  color: #1a1206;
+  cursor: pointer;
+  box-shadow: 0 8px 20px rgba(216, 169, 91, 0.26);
+  transition: 0.16s;
+}
+.chat__send:active {
+  transform: scale(0.93);
+}
+.chat__send:disabled {
+  background: var(--panel-2);
+  color: var(--muted);
+  box-shadow: none;
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+.chat__send-icon {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+/* ---------- 输入区下方：断线提示 / 字数 ---------- */
+.chat__foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 15px;
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.chat__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--warn);
+}
+.chat__status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  animation: chatPulse 1.4s ease-in-out infinite;
+}
+@keyframes chatPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+.chat__count {
+  margin-left: auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+.chat__count--near {
+  color: var(--warn);
+}
+.chat__count--full {
+  color: #ef8a7c;
+  font-weight: 600;
+}
+
+/* ---------- 连接中 / 断线：整体置灰 ---------- */
+.chat--disabled .chat__chips,
+.chat--disabled .chat__input-row {
+  opacity: 0.5;
+}
+
+/* ---------- 小屏微调 ---------- */
+@media (max-width: 340px) {
+  .chat__msg {
+    max-width: 90%;
+  }
+  .chat__bubble {
+    font-size: 13.5px;
+  }
+  .chat__send {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+/* ---------- 动效偏好 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .chat__jump,
+  .chat__status::before {
+    animation: none;
+  }
+}

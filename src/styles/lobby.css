@@ -1,0 +1,261 @@
+/* ==========================================================================
+   联机等待厅（LobbyView）—— 只放这一个页面特有的样式
+   --------------------------------------------------------------------------
+   设计系统全部复用 main.css：卡片 / 按钮 / 标签 / 座位 / kv / warn / sheet / spinner。
+   这里的规则一律：
+     - 覆盖 main.css 已有 class 时用复合选择器（如 `.btn.lobby-copy`），
+       避免受 main.css 与 lobby.css 的引入顺序影响；
+     - 动画自己定义（lobbyPulse），不依赖别的文件里的 @keyframes。
+   ========================================================================== */
+
+/* ---------- 房号卡片：等宽大字 + 复制按钮 ---------- */
+.lobby-code {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.lobby-code__text {
+  flex: 0 0 auto;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Courier New', monospace;
+  font-size: clamp(26px, 9.2vw, 40px);
+  font-weight: 700;
+  line-height: 1.1;
+  /* 字距拉开，方便当着朋友的面一个个念出来；nowrap 保证小屏也不折行 */
+  letter-spacing: 0.2em;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--gold);
+  text-shadow: 0 6px 22px rgba(216, 169, 91, 0.2);
+}
+
+.btn.lobby-copy {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 10px 16px;
+  white-space: nowrap;
+}
+
+/* ---------- 加入步骤 ---------- */
+.lobby-steps {
+  margin: 6px 0 0;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--text-dim);
+}
+.lobby-steps li {
+  margin-bottom: 4px;
+}
+.lobby-steps li::marker {
+  color: var(--gold-dim);
+}
+.lobby-steps strong {
+  color: var(--text);
+}
+
+.lobby-url {
+  display: inline-block;
+  max-width: 100%;
+  padding: 1px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.32);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+  color: var(--gold);
+  word-break: break-all;
+}
+
+.lobby-code-inline {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Courier New', monospace;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--gold);
+}
+
+.lobby-dev-note {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px dashed rgba(216, 169, 91, 0.36);
+  background: rgba(216, 169, 91, 0.06);
+  color: #e2c48f;
+  line-height: 1.7;
+}
+.lobby-dev-note code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--gold);
+}
+
+/* ---------- 座位表：一人一行 ---------- */
+.lobby-seats {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lobby-seat__main {
+  flex: 1;
+  min-width: 0;
+}
+
+.lobby-seat__tag {
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+/* 掉线的人整行变淡 + 虚线，一眼能看出「这局还差谁」 */
+.seat--offline {
+  opacity: 0.66;
+  border-style: dashed;
+}
+
+.lobby-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.lobby-state::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.lobby-state--ok {
+  color: var(--ok);
+}
+.lobby-state--ok::before {
+  background: var(--ok);
+}
+.lobby-state--off {
+  color: var(--muted);
+}
+.lobby-state--off::before {
+  background: #6b7280;
+}
+.lobby-state--role {
+  margin-left: 10px;
+  color: var(--gold);
+}
+.lobby-state--role::before {
+  background: var(--gold);
+}
+
+/* ---------- 提示文案 / 操作区 ---------- */
+.lobby-note {
+  margin: 0 0 10px;
+  line-height: 1.7;
+}
+.lobby-note--gap {
+  margin: 10px 0 0;
+}
+
+.btn.lobby-self-ready {
+  margin-top: 10px;
+}
+
+.btn-row.lobby-leave {
+  margin-top: 4px;
+}
+
+/* ---------- 错误条（.warn 的布局层） ---------- */
+.warn.lobby-alert {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+}
+.lobby-alert__text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+.btn.lobby-alert__btn {
+  flex: 0 0 auto;
+  min-height: 44px;
+}
+
+/* ---------- 断线 / 重连中 ---------- */
+.lobby-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(217, 164, 65, 0.34);
+  background: rgba(217, 164, 65, 0.08);
+  color: #e8c37c;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.lobby-dot {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+  animation: lobbyPulse 1.4s ease-in-out infinite;
+}
+@keyframes lobbyPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* ---------- 服务端轻提示（不自动消失，由 store 清） ---------- */
+.lobby-toast {
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text-dim);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+/* ---------- 开局过渡态 ---------- */
+.lobby-started {
+  text-align: center;
+  border-color: rgba(216, 169, 91, 0.3);
+  padding: 26px 16px;
+}
+.lobby-started .spinner {
+  margin: 0 auto 16px;
+}
+.lobby-started__title {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--gold);
+}
+.lobby-started__hint {
+  margin: 0;
+}
+
+/* ---------- 尚未入座的兜底卡 ---------- */
+.lobby-void {
+  text-align: left;
+}
+
+/* ---------- 小屏微调 ---------- */
+@media (max-width: 340px) {
+  .lobby-code__text {
+    font-size: 24px;
+    letter-spacing: 0.16em;
+  }
+  .lobby-steps {
+    padding-left: 18px;
+    font-size: 12.5px;
+  }
+}

@@ -1,0 +1,348 @@
+<script setup lang="ts">
+import { computed, nextTick, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import AppTopBar from '@/components/AppTopBar.vue'
+import CountdownPill from '@/components/CountdownPill.vue'
+import PhaseStepper from '@/components/PhaseStepper.vue'
+import { useToast } from '@/composables/useToast'
+import { readingTimeText } from '@/services/rules'
+import { scriptLength } from '@/services/templates/assemble'
+import { useGameStore } from '@/stores/game'
+
+const router = useRouter()
+const game = useGameStore()
+const toast = useToast()
+
+const script = computed(() => game.state.script)
+const role = computed(() => game.viewingRole)
+const isSelf = computed(() => role.value?.name === game.selfRole?.name)
+
+/** 只看时间线：6 人局长剧本容易读累，这个开关能把无关描写折叠掉 */
+const timelineOnly = ref(false)
+const flashId = ref('')
+
+/**
+ * 时间点识别
+ * ------------------------------------------------------------------
+ * 真实大模型写时间点的方式非常不统一：既可能写 `22:30`，也可能写
+ * 「凌晨两点」「第二天一早」。这里把常见形态都覆盖进来，
+ * 保证「高亮关键时间点」在任何题材、任何写法下都不会失效。
+ */
+const DAY_PART =
+  '(?:凌晨|清晨|拂晓|早上|上午|中午|正午|下午|傍晚|黄昏|入夜|夜里|晚上|深夜|半夜|午夜|后半夜|次日|翌日|第二天)'
+const CLOCK = [
+  '\\d{1,2}\\s*[:：]\\s*\\d{2}', // 22:30
+  '\\d{1,2}\\s*[点时](?:\\s*(?:\\d{1,2}|半)\\s*分?)?', // 22点 / 9时30分 / 9点半
+  '[一二三四五六七八九十两]{1,3}\\s*点(?:\\s*(?:[一二三四五六七八九十]{1,3}|半)\\s*分?)?', // 凌晨两点 / 五点半
+].join('|')
+
+/** 每次都返回新的正则，避免 /g/ 的 lastIndex 状态在多次调用间互相污染 */
+function timeRe(): RegExp {
+  return new RegExp(`${DAY_PART}?\\s*(?:${CLOCK})|${DAY_PART}|案发前|案发后|案发时`, 'g')
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+/** 高亮关键时间点（先转义再插标签，避免内容里的尖括号破坏结构） */
+function highlight(text: string): string {
+  return escapeHtml(text).replace(timeRe(), (m) => `<mark class="time-mark">${m}</mark>`)
+}
+
+function extractTimes(text: string): string[] {
+  const out: string[] = []
+  const re = timeRe()
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    const v = m[0].replace(/\s/g, '')
+    if (!out.includes(v)) out.push(v)
+  }
+  return out
+}
+
+/** 剧本段落：保留原始下标，供「目录导航 / 时间线定位」滚动定位 */
+const paragraphs = computed(() => {
+  const text = role.value?.full_script ?? ''
+  return text
+    .split(/\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((line, i) => ({
+      line,
+      index: i,
+      rule: /^其[一二三四五]/.test(line),
+      times: extractTimes(line),
+    }))
+})
+
+const visibleParagraphs = computed(() =>
+  timelineOnly.value ? paragraphs.value.filter((p) => p.times.length > 0) : paragraphs.value,
+)
+
+/** 时间线导航：把插在剧本里的时间点抽成快捷跳转项 */
+const timeIndex = computed(() =>
+  paragraphs.value
+    .filter((p) => p.times.length > 0)
+    .flatMap((p) => p.times.slice(0, 1).map((t) => ({ label: t, index: p.index }))),
+)
+
+const sections = computed(() => {
+  const list = [
+    { id: 'sec-bg', label: '背景' },
+    { id: 'sec-role', label: '角色档案' },
+    { id: 'sec-script', label: '剧本正文' },
+  ]
+  if ((role.value?.side_quests ?? []).length > 0) list.push({ id: 'sec-quest', label: '支线任务' })
+  if (privateClues.value.length > 0) list.push({ id: 'sec-clue', label: '私有线索' })
+  return list
+})
+
+const privateClues = computed(() =>
+  game.state.clues.filter((c) => c.ownerRoleName === role.value?.name),
+)
+
+const wordCount = computed(() => scriptLength(role.value?.full_script ?? ''))
+/** 剧本超过 900 字就启用目录导航与时间高亮（6 人局 1000-1200 字） */
+const longScript = computed(() => wordCount.value > 900)
+const sideQuests = computed(() => role.value?.side_quests ?? [])
+
+const readDone = computed(() => game.selfSeat?.readConfirmed === true)
+const allRead = computed(() => game.allRead)
+
+onMounted(() => {
+  if (!game.state.script) router.replace('/')
+  if (game.state.phase === 'dealing' || game.state.phase === 'room') game.setPhase('reading')
+})
+
+function scrollTo(id: string) {
+  const el = document.getElementById(id)
+  if (!el) return
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  flashId.value = id
+  window.setTimeout(() => {
+    if (flashId.value === id) flashId.value = ''
+  }, 1200)
+}
+
+function jumpToParagraph(index: number) {
+  if (timelineOnly.value) timelineOnly.value = false
+  // 等「只看时间线」的过滤结果渲染完成，再滚动
+  nextTick(() => scrollTo(`para-${index}`))
+}
+
+function confirmRead() {
+  game.confirmReading()
+  toast.success('已确认读完，请记住你的秘密')
+}
+
+function gotoStatement() {
+  game.startStatement()
+  // 联机：阶段由服务器统一改，改完 App.vue 会把所有人一起带到陈述页
+  if (game.state.online) return
+  router.push('/statement')
+}
+
+function switchRole(index: number) {
+  if (!game.state.godMode) {
+    toast.warn('只有单人演示模式可以切换角色')
+    return
+  }
+  game.viewRole(index)
+  timelineOnly.value = false
+}
+</script>
+
+<template>
+  <AppTopBar :title="script?.game_config.theme ?? '阅读剧本'" sub="阅读阶段" show-back>
+    <CountdownPill />
+  </AppTopBar>
+  <PhaseStepper />
+
+  <main class="page">
+    <p v-if="game.state.godMode" class="section-title">
+      上帝视角（演示）· 可切换任意角色，🩸 标记的是真凶
+    </p>
+    <div v-if="game.state.godMode" class="stepper" style="padding: 0 0 6px; margin-bottom: 6px">
+      <button
+        v-for="(r, i) in game.roles"
+        :key="r.name"
+        class="stepper__item"
+        :class="{ 'stepper__item--now': i === game.state.readingRoleIndex }"
+        @click="switchRole(i)"
+      >
+        {{ r.name }}{{ r.is_murderer ? ' 🩸' : '' }}
+      </button>
+    </div>
+
+    <!-- 目录导航：长剧本专用，免得在 1000+ 字里迷路 -->
+    <nav v-if="longScript" class="toc">
+      <div class="toc__row">
+        <span class="toc__label">目录</span>
+        <button v-for="s in sections" :key="s.id" class="toc__chip" @click="scrollTo(s.id)">
+          {{ s.label }}
+        </button>
+      </div>
+      <div v-if="timeIndex.length" class="toc__row">
+        <span class="toc__label">时间</span>
+        <button
+          v-for="t in timeIndex"
+          :key="t.label + t.index"
+          class="toc__chip toc__chip--time"
+          @click="jumpToParagraph(t.index)"
+        >
+          {{ t.label }}
+        </button>
+      </div>
+    </nav>
+
+    <section v-if="longScript" class="card reading-meta">
+      <div style="display: flex; align-items: center; gap: 10px">
+        <span style="font-size: 20px">📖</span>
+        <div style="flex: 1; min-width: 0">
+          <div class="small bold">本局阅读时长 {{ readingTimeText(game.rule.readingSeconds) }}</div>
+          <div class="tiny muted">
+            你的剧本 {{ wordCount }} 字（{{ game.state.seats.length }} 人局标准
+            {{ game.rule.scriptMin }}-{{ game.rule.scriptMax }} 字），关键时间点已为你标出
+          </div>
+        </div>
+        <button
+          class="mini-btn"
+          :class="{ 'mini-btn--on': timelineOnly }"
+          @click="timelineOnly = !timelineOnly"
+        >
+          {{ timelineOnly ? '只看时间线中' : '只看时间线' }}
+        </button>
+      </div>
+    </section>
+
+    <section v-if="script" id="sec-bg" class="card" :class="{ flash: flashId === 'sec-bg' }">
+      <h3 class="card__title">故事背景</h3>
+      <p class="serif" style="margin: 0; line-height: 1.95; color: #dcd9d3">
+        {{ script.game_config.background_story }}
+      </p>
+    </section>
+
+    <section v-if="role" id="sec-role" class="card" :class="{ flash: flashId === 'sec-role' }">
+      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px">
+        <div style="font-size: 26px">🎭</div>
+        <div style="flex: 1; min-width: 0">
+          <div style="font-size: 19px; font-weight: 700; letter-spacing: 0.06em">
+            {{ role.name }}
+          </div>
+          <div class="small muted">{{ role.identity }}</div>
+        </div>
+        <span v-if="isSelf" class="tag tag--gold">你的角色</span>
+        <span v-else class="tag">上帝视角 · 他人剧本</span>
+      </div>
+
+      <!--
+        阵营卡：每个人开局就必须明确知道「自己是好人还是凶手」以及各自的胜负条件。
+        这里只描述**当前查看的这个角色自己**的立场，不会泄露其他角色。
+      -->
+      <div class="camp" :class="role.is_murderer ? 'camp--killer' : 'camp--civil'">
+        <span class="camp__badge">{{ role.is_murderer ? '凶手' : '平民' }}</span>
+        <span class="camp__text">
+          <template v-if="isSelf && role.is_murderer">
+            你<strong>就是</strong>本案真凶。只要最终投票里你不是<strong>唯一</strong>最高票，凶手阵营就赢 ——
+            平票、投错人、甚至没人投你，都算你逃脱。
+          </template>
+          <template v-else-if="isSelf">
+            你是<strong>清白</strong>的。只有最终投票把真凶投成<strong>唯一</strong>最高票，平民阵营才赢；
+            平票或投错人，凶手就逃脱了。
+          </template>
+          <template v-else-if="role.is_murderer">
+            （上帝视角）{{ role.name }} 是本案真凶，胜负条件同上：不被投成唯一最高票即逃脱。
+          </template>
+          <template v-else>（上帝视角）{{ role.name }} 是清白的平民。</template>
+        </span>
+      </div>
+
+      <div class="divider" />
+
+      <div class="kv">
+        <span class="kv__k">表层任务</span>
+        <span class="kv__v">{{ role.surface_task }}</span>
+      </div>
+      <div class="kv">
+        <span class="kv__k">深层任务</span>
+        <span class="kv__v">{{ role.deep_task }}</span>
+      </div>
+      <div class="kv">
+        <span class="kv__k">行动轨迹</span>
+        <span class="kv__v">{{ role.personal_timeline }}</span>
+      </div>
+      <div v-if="role.is_murderer" class="kv">
+        <span class="kv__k">你的处境</span>
+        <span class="kv__v blood bold">本案是你动的手 —— 别被投成唯一最高票</span>
+      </div>
+      <div v-else class="kv">
+        <span class="kv__k">你的处境</span>
+        <span class="kv__v gold bold">你是清白的 —— 找出真凶并说服其他人</span>
+      </div>
+    </section>
+
+    <article v-if="role" id="sec-script" class="card" :class="{ flash: flashId === 'sec-script' }">
+      <h3 class="card__title">你的剧本</h3>
+      <div class="script-body">
+        <p
+          v-for="p in visibleParagraphs"
+          :id="`para-${p.index}`"
+          :key="p.index"
+          :class="{ gold: p.rule, flash: flashId === `para-${p.index}` }"
+          v-html="highlight(p.line)"
+        />
+        <p v-if="visibleParagraphs.length === 0" class="muted">你的剧本里没有明确的时间点</p>
+      </div>
+    </article>
+
+    <article
+      v-if="sideQuests.length"
+      id="sec-quest"
+      class="card"
+      :class="{ flash: flashId === 'sec-quest' }"
+    >
+      <h3 class="card__title">独立支线任务</h3>
+      <p class="card__hint" style="margin-bottom: 10px">
+        这些和主线案件没有直接关系，但同样要藏住——它们会是别人追问你的抓手。
+      </p>
+      <div v-for="(q, i) in sideQuests" :key="i" class="quest">
+        <span class="quest__no">{{ i + 1 }}</span>
+        <span>{{ q }}</span>
+      </div>
+    </article>
+
+    <article
+      v-if="privateClues.length"
+      id="sec-clue"
+      class="card"
+      :class="{ flash: flashId === 'sec-clue' }"
+    >
+      <h3 class="card__title">你的私有线索</h3>
+      <p class="card__hint" style="margin-bottom: 10px">这些是你自己知道的，别人不知道。</p>
+      <div v-for="c in privateClues" :key="c.id" class="clue clue--private">
+        <div class="clue__text">{{ c.text }}</div>
+      </div>
+    </article>
+
+    <p v-if="!role" class="empty">剧本还没下发</p>
+  </main>
+
+  <div class="dock">
+    <div class="dock__inner">
+      <div class="dock__info">
+        <template v-if="readDone">
+          已确认读完
+          <template v-if="allRead"> · 全部玩家就绪</template>
+        </template>
+        <template v-else>读完再点确认，别漏掉自己的秘密</template>
+      </div>
+      <button v-if="!readDone" class="btn btn--primary btn--sm" @click="confirmRead">
+        我已读完
+      </button>
+      <button v-else class="btn btn--primary btn--sm" @click="gotoStatement">
+        进入第 1 轮陈述
+      </button>
+    </div>
+  </div>
+</template>

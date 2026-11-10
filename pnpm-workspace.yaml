@@ -1,0 +1,17 @@
+# pnpm 11 读取本文件作为配置中心（settings 已从 package.json 的 "pnpm" 字段迁移到这里）
+#
+# nodeLinker: hoisted
+#   使用扁平（npm 风格）的 node_modules 布局。
+#   原因：Windows + 受限环境（DSH 文件沙箱）下 node 的 realpath 不能正确穿透
+#   pnpm 的 junction 软链，导致 vite 解析不到 picomatch 等传递依赖。
+#   扁平布局没有软链，解析稳定。
+nodeLinker: hoisted
+
+# 固定 store 位置：本仓库的依赖装在项目内的 .pnpm-store，
+# 不指定的话 pnpm 会切到全局 store 并报 ERR_PNPM_UNEXPECTED_STORE。
+storeDir: .pnpm-store
+
+# 允许这些包执行安装脚本（esbuild 需要校验平台二进制，vue-demi 需要生成入口）
+onlyBuiltDependencies:
+  - esbuild
+  - vue-demi
