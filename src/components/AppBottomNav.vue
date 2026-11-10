@@ -2,9 +2,9 @@
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import SheetModal from '@/components/SheetModal.vue'
-import { PHASE_ROUTE } from '@/services/net/protocol'
 import {
   navTabForRoute,
+  resolveGameEntry,
   type AppNavItem,
 } from '@/services/gameNavigation'
 import { useGameStore } from '@/stores/game'
@@ -36,19 +36,15 @@ function goHome() {
 }
 
 function goGame() {
-  if (net.inRoom) {
-    router.push(PHASE_ROUTE[net.phase] ?? 'lobby')
-    return
-  }
-  if (game.state.script) {
-    router.push(PHASE_ROUTE[game.state.phase] ?? '/room')
-    return
-  }
-  if (game.state.seats.length > 0) {
-    router.push('/room')
-    return
-  }
-  router.push('/')
+  router.push(
+    resolveGameEntry({
+      inRoom: net.inRoom,
+      onlinePhase: net.phase,
+      gamePhase: game.state.phase,
+      hasScript: !!game.state.script,
+      seatCount: game.state.seats.length,
+    }).route,
+  )
 }
 
 function goSocial() {

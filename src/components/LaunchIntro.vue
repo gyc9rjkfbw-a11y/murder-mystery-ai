@@ -1,13 +1,20 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import BrandMark from '@/components/BrandMark.vue'
+import { useSettingsStore } from '@/stores/settings'
 import {
   markLaunchIntroSeen,
   prefersReducedMotion,
   shouldPlayLaunchIntro,
 } from '@/services/launchExperience'
 
-const visible = ref(shouldPlayLaunchIntro(undefined, prefersReducedMotion()))
+const settings = useSettingsStore()
+const visible = ref(
+  shouldPlayLaunchIntro(
+    undefined,
+    prefersReducedMotion() || settings.state.motion === 'reduced',
+  ),
+)
 const leaving = ref(false)
 let leaveTimer = 0
 let removeTimer = 0

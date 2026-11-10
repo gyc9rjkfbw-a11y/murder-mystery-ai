@@ -9,9 +9,11 @@ import { readingTimeText } from '@/services/rules'
 import { buildStoryActs } from '@/services/storyActs'
 import { scriptLength } from '@/services/templates/assemble'
 import { useGameStore } from '@/stores/game'
+import { useSettingsStore } from '@/stores/settings'
 
 const router = useRouter()
 const game = useGameStore()
+const settings = useSettingsStore()
 const toast = useToast()
 
 const script = computed(() => game.state.script)
@@ -212,7 +214,10 @@ function switchRole(index: number) {
   </AppTopBar>
   <PhaseStepper />
 
-  <main class="page">
+  <main
+    class="page reading-page"
+    :class="{ 'reading-page--large': settings.state.readingFontSize === 'large' }"
+  >
     <p v-if="game.state.godMode" class="section-title">
       上帝视角（演示）· 可切换任意角色，🩸 标记的是真凶
     </p>

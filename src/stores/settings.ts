@@ -22,6 +22,12 @@ export interface SettingsState {
    * 否则上一局开过之后，下一局平民一进房间就直接看到凶手特权了。
    */
   demoMode: boolean
+  /** 新房间默认人数 */
+  defaultPlayerCount: 4 | 5 | 6
+  /** 动画偏好：跟随系统或强制精简 */
+  motion: 'system' | 'reduced'
+  /** 剧本阅读字号 */
+  readingFontSize: 'normal' | 'large'
   /** AI 配置 */
   ai: AiConfig
 }
@@ -40,6 +46,9 @@ function defaultState(): SettingsState {
     playerName: randomNickname(),
     avatar: randomAvatar(),
     demoMode: false,
+    defaultPlayerCount: 5,
+    motion: 'system',
+    readingFontSize: 'normal',
     ai: { ...DEFAULT_AI },
   }
 }
@@ -66,6 +75,11 @@ function hasLocalSettings(): boolean {
 
 const freshInstall = !hasLocalSettings()
 
+function applyMotionPreference(motion: SettingsState['motion']): void {
+  if (typeof document === 'undefined') return
+  document.documentElement.dataset.motion = motion
+}
+
 export const useSettingsStore = defineStore('settings', () => {
   const saved = loadJSON<Partial<SettingsState>>(STORAGE_KEYS.settings, {})
   // 兼容旧存档：把已经落盘的 demoMode 丢掉，避免「上帝视角」跨局残留
@@ -80,11 +94,30 @@ export const useSettingsStore = defineStore('settings', () => {
     ...saved,
     ai: { ...DEFAULT_AI, ...(saved.ai ?? {}) },
   })
+  if (![4, 5, 6].includes(state.defaultPlayerCount)) state.defaultPlayerCount = 5
+  if (state.motion !== 'system' && state.motion !== 'reduced') state.motion = 'system'
+  if (state.readingFontSize !== 'normal' && state.readingFontSize !== 'large') {
+    state.readingFontSize = 'normal'
+  }
+
+  watch(
+    () => state.motion,
+    (motion) => applyMotionPreference(motion),
+    { immediate: true },
+  )
 
   watch(
     state,
-    // 只持久化昵称 / 头像 / AI 配置：上帝视角必须每局重新手动开启
-    (v) => saveJSON(STORAGE_KEYS.settings, { playerName: v.playerName, avatar: v.avatar, ai: v.ai }),
+    // 上帝视角必须每局重新手动开启，其余玩家偏好持久化。
+    (v) =>
+      saveJSON(STORAGE_KEYS.settings, {
+        playerName: v.playerName,
+        avatar: v.avatar,
+        defaultPlayerCount: v.defaultPlayerCount,
+        motion: v.motion,
+        readingFontSize: v.readingFontSize,
+        ai: v.ai,
+      }),
     { deep: true },
   )
 

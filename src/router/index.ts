@@ -9,6 +9,11 @@ import { resolveDemoRedirect } from '@/services/demoBootstrap'
  */
 const routes: RouteRecordRaw[] = [
   { path: '/', name: 'home', component: () => import('@/views/HomeView.vue') },
+  {
+    path: '/game',
+    name: 'game-setup',
+    component: () => import('@/views/GameSetupView.vue'),
+  },
   { path: '/settings', name: 'settings', component: () => import('@/views/SettingsView.vue') },
   { path: '/room', name: 'room', component: () => import('@/views/RoomView.vue') },
   // 联机等待厅：建房/加入之后、开局之前的地方
