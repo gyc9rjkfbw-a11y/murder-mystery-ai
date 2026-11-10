@@ -24,6 +24,7 @@ const router = useRouter()
 const route = useRoute()
 const ACTION_DOCK_ROUTES = new Set(['reading', 'statement', 'search', 'poll', 'organize', 'voting'])
 const hasActionDock = computed(() => ACTION_DOCK_ROUTES.has(route.name as string))
+const isDiscussionRoute = computed(() => route.name === 'statement')
 
 /**
  * 启动时同步一次「我的档案」：
@@ -46,7 +47,13 @@ watch(
 </script>
 
 <template>
-  <div class="shell shell--app-nav" :class="{ 'shell--action-dock': hasActionDock }">
+  <div
+    class="shell shell--app-nav"
+    :class="{
+      'shell--action-dock': hasActionDock,
+      'shell--discussion': isDiscussionRoute,
+    }"
+  >
     <router-view v-slot="{ Component }">
       <Transition name="route" mode="out-in">
         <div :key="route.path" class="route-view">

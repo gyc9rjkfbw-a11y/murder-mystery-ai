@@ -4,9 +4,11 @@ import { useRouter } from 'vue-router'
 import AppTopBar from '@/components/AppTopBar.vue'
 import CountdownPill from '@/components/CountdownPill.vue'
 import PhaseStepper from '@/components/PhaseStepper.vue'
+import SheetModal from '@/components/SheetModal.vue'
 import { useToast } from '@/composables/useToast'
 import { useGameStore } from '@/stores/game'
 import { useNetStore } from '@/stores/net'
+import type { ClueItem } from '@/types/script'
 
 const router = useRouter()
 const game = useGameStore()
@@ -17,6 +19,11 @@ const autoPlay = ref(true)
 const draft = ref('')
 const scope = ref<'round' | 'all'>('round')
 const taRef = ref<HTMLTextAreaElement | null>(null)
+const evidenceOpen = ref(false)
+const clueOpen = ref(false)
+const inferenceOpen = ref(false)
+const selectedEvidence = ref<ClueItem | null>(null)
+const inferenceDraft = ref('')
 let handle = 0
 
 /** 发言草稿上限：够写一段完整陈述，但不至于把发言刷屏 */
@@ -100,6 +107,21 @@ const myTurn = computed(() => speaker.value?.isSelf === true && !game.selfHasSpo
 const allSpoken = computed(() => game.allSpoken)
 const isSearchRound = computed(() => game.state.round <= game.state.searchRounds)
 const isLastRound = computed(() => game.state.round >= game.state.maxRounds)
+const selfSeat = computed(() => game.selfSeat)
+const selfRole = computed(() => game.selfRole)
+const selfAvatar = computed(() => selfSeat.value?.avatar || '🎭')
+const discussionTitle = computed(() => game.state.script?.game_config.theme || '公开讨论')
+
+const selfObjective = computed(() => {
+  if (selfRole.value?.is_murderer) return '隐藏真相，避免成为唯一最高票'
+  return '找出真凶，并让证据链指向正确的人'
+})
+
+const currentSpeakerIdentity = computed(() => {
+  const roleName = speaker.value?.roleName
+  if (!roleName) return '身份尚未公开'
+  return game.roles.find((role) => role.name === roleName)?.identity ?? '身份尚未公开'
+})
 
 const privilege = computed(() => game.state.privilege)
 const showPrivilege = computed(
@@ -120,11 +142,20 @@ const feed = computed(() => {
 /** 玩家发言条数（不含系统播报） */
 const spokenCount = computed(() => game.roundStatements.length)
 
+const evidenceCards = computed(() => {
+  const seen = new Set<string>()
+  return [...game.myClues, ...game.publicClues].filter((clue) => {
+    if (seen.has(clue.id)) return false
+    seen.add(clue.id)
+    return true
+  })
+})
+
 const dockText = computed(() => {
-  if (!allSpoken.value) return `按顺序轮流陈述 · 已发言 ${spokenCount.value}/${game.state.seats.length}`
-  if (isSearchRound.value) return `本轮陈述结束，进入第 ${game.state.round} 轮搜证`
-  if (!isLastRound.value) return '本轮陈述结束，先摸一次底再进下一轮'
-  return '本轮陈述结束，将关闭所有人的发言通道'
+  if (!allSpoken.value) return `按顺序公开讨论 · 已发言 ${spokenCount.value}/${game.state.seats.length}`
+  if (isSearchRound.value) return `本轮讨论结束，进入第 ${game.state.round} 轮搜证`
+  if (!isLastRound.value) return '本轮讨论结束，先摸一次底再进下一轮'
+  return '本轮讨论结束，将关闭所有人的发言通道'
 })
 
 const dockLabel = computed(() => {
@@ -211,11 +242,56 @@ function skipSpeaker() {
   net.pass()
   toast.info('已请服务器跳过当前发言者')
 }
+
+function evidenceName(clue: ClueItem): string {
+  const text = clue.text
+    .replace(/[，。；、,:：（）()]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return text.slice(0, 10) || '新的线索'
+}
+
+function evidenceIcon(clue: ClueItem): string {
+  if (/钥匙|锁|门/.test(clue.text)) return '🔑'
+  if (/录音|磁带|声音|电话/.test(clue.text)) return '◉'
+  if (/账|信|纸|名单|记录/.test(clue.text)) return '📜'
+  if (/血|衣|布|伤/.test(clue.text)) return '🩸'
+  if (/时间|钟|表/.test(clue.text)) return '⌛'
+  return '🔎'
+}
+
+function openEvidence(clue: ClueItem) {
+  selectedEvidence.value = clue
+  evidenceOpen.value = false
+  clueOpen.value = true
+}
+
+function useSelectedEvidence() {
+  const clue = selectedEvidence.value
+  if (!clue) return
+  const line = `【线索】${clue.text}`
+  draft.value = draft.value.trim() ? `${draft.value.trim()}\n${line}` : line
+  clueOpen.value = false
+  evidenceOpen.value = false
+  toast.success(myTurn.value ? '线索已加入发言草稿' : '线索已加入草稿，轮到你时可直接发送')
+  void nextTick(() => taRef.value?.focus())
+}
+
+function openInference() {
+  inferenceDraft.value = game.state.notes
+  inferenceOpen.value = true
+}
+
+function saveInference() {
+  game.state.notes = inferenceDraft.value.trim()
+  inferenceOpen.value = false
+  toast.success('推理已存入个人整理')
+}
 </script>
 
 <template>
   <AppTopBar
-    :title="`第 ${game.state.round} / ${game.state.maxRounds} 轮陈述`"
+    :title="`第 ${game.state.round} / ${game.state.maxRounds} 轮公开讨论`"
     :sub="game.currentRoundTheme.title"
     show-back
   >
@@ -223,52 +299,81 @@ function skipSpeaker() {
   </AppTopBar>
   <PhaseStepper />
 
-  <main class="page">
-    <section class="card round-card">
-      <div class="round-card__head">
-        <span class="tag tag--gold">本轮目标</span>
-        <span class="tiny muted">
-          共 {{ game.state.seats.length }} 人 · 每人 1 次发言
-        </span>
-      </div>
-      <!-- 阵营提醒：全程可见，免得玩到一半忘了自己是好人还是凶手 -->
-      <div class="camp camp--mini" :class="game.selfRole?.is_murderer ? 'camp--killer' : 'camp--civil'">
-        <span class="camp__badge">{{ game.selfRole?.is_murderer ? '凶手' : '平民' }}</span>
-        <span class="camp__text">
-          <template v-if="game.selfRole?.is_murderer">
-            你的目标：不被投成唯一最高票（平票也算你赢）。
-          </template>
-          <template v-else>你的目标：把真凶投成唯一最高票。</template>
-        </span>
-      </div>
-      <p class="round-card__goal">{{ game.currentRoundTheme.goal }}</p>
-      <p class="tiny muted" style="margin: 0">系统：{{ game.currentRoundTheme.systemAction }}</p>
-    </section>
+  <main class="page discussion-page">
+    <header class="discussion-masthead">
+      <div class="discussion-masthead__rule"><span /></div>
+      <div class="discussion-masthead__kicker">PUBLIC DISCUSSION</div>
+      <h1>{{ discussionTitle }}</h1>
+      <p>线索 · 动机 · 真相</p>
+    </header>
 
-    <section v-if="showPrivilege && privilege" class="privilege">
-      <div class="privilege__head">
-        <span>🩸</span>
-        <span>凶手特权 · 第 {{ privilege.round }} 轮已解锁</span>
-        <span
-          class="tag"
-          :class="privilegeIsGodView ? 'tag--blood' : 'tag--gold'"
-          style="margin-left: auto"
-        >
-          {{ privilegeIsGodView ? '上帝视角 · 正常对局你看不到' : '仅你可见' }}
-        </span>
-      </div>
-      <div class="privilege__body">{{ privilege.hint }}</div>
-      <p class="tiny muted" style="margin: 10px 0 0">
-        <template v-if="privilegeIsGodView">
-          这是凶手端的私有信息。你正在用上帝视角观战，所以能看到它 —— 正常对局里平民不会出现这一块。
-        </template>
-        <template v-else>
-          这是对所有玩家表层任务的模糊心理感知。用它引导话题，别直接说出你看到的东西。
-        </template>
-      </p>
-    </section>
+    <div class="discussion-grid">
+      <aside class="discussion-panel discussion-role-panel">
+        <div class="discussion-panel__head">
+          <span>你的角色</span>
+        </div>
+        <div class="discussion-role__portrait">
+          <span>{{ selfAvatar }}</span>
+        </div>
+        <div class="discussion-role__name">{{ selfRole?.name ?? '等待角色分配' }}</div>
+        <div class="discussion-role__camp" :class="selfRole?.is_murderer ? 'is-killer' : 'is-civil'">
+          {{ selfRole?.is_murderer ? '凶手阵营' : '平民阵营' }}
+        </div>
+        <div class="discussion-role__facts">
+          <div>
+            <span>身份</span>
+            <strong>{{ selfRole?.identity ?? '尚未下发' }}</strong>
+          </div>
+          <div>
+            <span>目标</span>
+            <strong>{{ selfObjective }}</strong>
+          </div>
+        </div>
+        <div class="discussion-role__task">
+          <span>随身任务</span>
+          <p>{{ selfRole?.surface_task ?? '先听别人怎么说，再决定亮出哪张牌。' }}</p>
+        </div>
+      </aside>
 
-    <section class="card">
+      <section class="discussion-center-column">
+        <section class="card round-card discussion-round-card">
+          <div class="round-card__head">
+            <span class="tag tag--gold">第 {{ game.state.round }} 轮讨论</span>
+            <span class="tiny muted">
+              {{ spokenCount }} / {{ game.state.seats.length }} 人已发言
+            </span>
+            <button
+              v-if="!game.state.online || net.isHost"
+              class="discussion-advance"
+              :disabled="!allSpoken"
+              @click="finishRound"
+            >
+              {{ dockLabel }}
+            </button>
+            <span v-else class="tag">等待房主推进</span>
+          </div>
+          <p class="round-card__goal">{{ game.currentRoundTheme.goal }}</p>
+          <p class="tiny muted discussion-round-card__system">
+            系统：{{ game.currentRoundTheme.systemAction }}
+          </p>
+        </section>
+
+        <section v-if="showPrivilege && privilege" class="privilege discussion-privilege">
+          <div class="privilege__head">
+            <span>🩸</span>
+            <span>凶手特权 · 第 {{ privilege.round }} 轮已解锁</span>
+            <span
+              class="tag"
+              :class="privilegeIsGodView ? 'tag--blood' : 'tag--gold'"
+              style="margin-left: auto"
+            >
+              {{ privilegeIsGodView ? '上帝视角' : '仅你可见' }}
+            </span>
+          </div>
+          <div class="privilege__body">{{ privilege.hint }}</div>
+        </section>
+
+    <section class="card discussion-current-speaker">
       <div style="display: flex; align-items: center; gap: 10px">
         <div class="speech__avatar">{{ speaker?.avatar ?? '？' }}</div>
         <div style="flex: 1; min-width: 0">
@@ -277,7 +382,7 @@ function skipSpeaker() {
             <span v-if="myTurn" class="tag tag--gold" style="margin-left: 6px">轮到你</span>
           </div>
           <div class="seat__meta">
-            {{ game.roles.find((r) => r.name === speaker?.roleName)?.identity ?? '身份未知' }}
+            {{ currentSpeakerIdentity }}
           </div>
         </div>
         <button
@@ -288,6 +393,13 @@ function skipSpeaker() {
         >
           {{ autoPlay ? '自动播放中' : '自动播放' }}
         </button>
+        <button
+          v-if="game.state.online && net.isHost && !myTurn && speaker"
+          class="mini-btn"
+          @click="skipSpeaker"
+        >
+          跳过 TA
+        </button>
       </div>
 
       <!-- 联机时发言由服务器轮转，这两个按钮只对单机模拟有意义 -->
@@ -297,7 +409,7 @@ function skipSpeaker() {
       </div>
     </section>
 
-    <section v-if="myTurn" class="card">
+    <section v-if="myTurn" class="card discussion-composer">
       <h3 class="card__title">轮到你发言（第 {{ game.state.round }} 轮）</h3>
       <p class="card__hint" style="margin-bottom: 10px">
         {{
@@ -356,7 +468,7 @@ function skipSpeaker() {
     <!-- 不是我的轮次：想插话就开麦，或者去公屏打字（打字端的存在意义就在这里） -->
     <section
       v-else-if="game.state.online && speaker && !currentHasSpoken"
-      class="card"
+      class="card discussion-whisper-tip"
       style="display: flex; align-items: center; gap: 8px"
     >
       <span class="tiny muted" style="flex: 1">
@@ -366,7 +478,7 @@ function skipSpeaker() {
       <button class="btn btn--ghost btn--sm" @click="net.openTalk('chat')">💬 打字</button>
     </section>
 
-    <div class="feed-head">
+    <div class="feed-head discussion-feed-head">
       <p class="section-title" style="margin: 0">
         发言记录 {{ spokenCount }} / {{ game.state.seats.length }}
       </p>
@@ -380,7 +492,7 @@ function skipSpeaker() {
       </div>
     </div>
 
-    <section>
+    <section class="discussion-feed">
       <div v-if="feed.length === 0" class="empty">还没有人开口</div>
       <template v-for="(s, i) in feed" :key="i">
         <div v-if="s.kind === 'system'" class="sysmsg">
@@ -406,35 +518,110 @@ function skipSpeaker() {
         </div>
       </template>
     </section>
+      </section>
+
+      <aside class="discussion-panel discussion-evidence-panel">
+        <div class="discussion-panel__head">
+          <span>证据链</span>
+        </div>
+        <p class="discussion-evidence__hint">点击证物，可把线索直接加入发言草稿。</p>
+        <div v-if="evidenceCards.length" class="discussion-evidence__grid">
+          <button
+            v-for="clue in evidenceCards.slice(0, 6)"
+            :key="clue.id"
+            class="discussion-evidence-card"
+            @click="openEvidence(clue)"
+          >
+            <span class="discussion-evidence-card__icon">{{ evidenceIcon(clue) }}</span>
+            <strong>{{ evidenceName(clue) }}</strong>
+            <small>{{ clue.published ? '公开线索' : clue.isPrivate ? '私有线索' : clue.location }}</small>
+          </button>
+        </div>
+        <div v-else class="discussion-evidence__empty">
+          <span>◇</span>
+          <strong>证据链尚未建立</strong>
+          <p>留意系统发放的公共线索，也可以把自己的私有线索带进讨论。</p>
+        </div>
+        <button class="discussion-evidence__more" @click="evidenceOpen = true">
+          查看全部证据
+          <span>{{ evidenceCards.length }}</span>
+        </button>
+      </aside>
+    </div>
   </main>
 
-  <div class="dock">
-    <div class="dock__inner">
-      <div class="dock__info">
-        {{
-          game.state.online && !net.isHost && allSpoken
-            ? '本轮都说完啦，等房主推进到下一阶段'
-            : dockText
-        }}
-      </div>
-      <!-- 真人卡住时的兜底：房主可以替当前发言人跳过（服务器只认房主的 pass） -->
-      <button
-        v-if="game.state.online && net.isHost && !myTurn && !!game.currentSpeaker"
-        class="btn btn--ghost btn--sm"
-        @click="skipSpeaker"
-      >
-        跳过 TA
+  <div class="dock discussion-dock">
+    <div class="discussion-dock__status">
+      <span>{{ dockText }}</span>
+      <small>{{ game.currentRoundTheme.title }}</small>
+    </div>
+    <div class="discussion-actions">
+      <button class="discussion-action discussion-action--infer" @click="openInference">
+        <span aria-hidden="true">⚖</span>
+        提交推理
       </button>
-      <!-- 联机：阶段推进是房主的权限，其他人只等 -->
-      <button
-        v-if="!game.state.online || net.isHost"
-        class="btn btn--primary btn--sm"
-        :disabled="!allSpoken"
-        @click="finishRound"
-      >
-        {{ dockLabel }}
+      <button class="discussion-action discussion-action--clue" @click="evidenceOpen = true">
+        <span aria-hidden="true">✦</span>
+        使用线索
       </button>
-      <span v-else class="tag">等待房主</span>
+      <button class="discussion-action" @click="router.push('/reading')">
+        <span aria-hidden="true">▤</span>
+        查看剧本
+      </button>
     </div>
   </div>
+
+  <SheetModal :open="inferenceOpen" title="记录当前推理" @close="inferenceOpen = false">
+    <p class="card__hint" style="margin-bottom: 10px">
+      写下目前最怀疑的人、动机和证据。进入个人整理阶段后，这份内容会继续保留。
+    </p>
+    <textarea
+      v-model="inferenceDraft"
+      class="textarea discussion-inference-input"
+      maxlength="1200"
+      placeholder="例如：我怀疑管家。22:15 的钥匙记录和他的证词对不上，染血披肩也应该能解释作案路线……"
+    />
+    <div class="discussion-inference__meta">
+      <span>{{ inferenceDraft.length }} / 1200</span>
+      <button class="btn btn--primary btn--sm" @click="saveInference">保存推理</button>
+    </div>
+  </SheetModal>
+
+  <SheetModal :open="evidenceOpen" title="选择一条线索" @close="evidenceOpen = false">
+    <p class="card__hint" style="margin-bottom: 10px">
+      公共线索与你自己掌握的线索会出现在这里。选中后可加入发言草稿。
+    </p>
+    <div v-if="evidenceCards.length" class="discussion-evidence-list">
+      <button
+        v-for="clue in evidenceCards"
+        :key="clue.id"
+        class="discussion-evidence-option"
+        @click="openEvidence(clue)"
+      >
+        <span class="discussion-evidence-card__icon">{{ evidenceIcon(clue) }}</span>
+        <span>
+          <strong>{{ evidenceName(clue) }}</strong>
+          <small>{{ clue.text }}</small>
+        </span>
+      </button>
+    </div>
+    <div v-else class="discussion-evidence__empty">
+      <span>◇</span>
+      <strong>暂时还没有可用线索</strong>
+      <p>系统会在轮次推进时发放线索。</p>
+    </div>
+  </SheetModal>
+
+  <SheetModal :open="clueOpen" title="证物详情" @close="clueOpen = false">
+    <div v-if="selectedEvidence" class="discussion-clue-detail">
+      <div class="discussion-clue-detail__icon">{{ evidenceIcon(selectedEvidence) }}</div>
+      <div class="discussion-clue-detail__source">
+        {{ selectedEvidence.published ? '公开线索' : selectedEvidence.isPrivate ? '私有线索' : selectedEvidence.location }}
+      </div>
+      <p>{{ selectedEvidence.text }}</p>
+      <button class="btn btn--primary" @click="useSelectedEvidence">
+        把这条线索加入发言
+      </button>
+    </div>
+  </SheetModal>
 </template>

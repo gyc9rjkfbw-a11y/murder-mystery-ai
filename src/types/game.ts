@@ -41,7 +41,7 @@ export const PHASES: PhaseMeta[] = [
   { key: 'room', label: '组局', desc: '等待玩家就位并确认剧本配置', duration: 0 },
   { key: 'dealing', label: '下发剧本', desc: 'AI 引擎生成全局真相与角色剧本', duration: 0 },
   { key: 'reading', label: '阅读剧本', desc: '读你的本，记住你的秘密', duration: 600 },
-  { key: 'statement', label: '集中陈述', desc: '轮流开口，谁在撒谎？', duration: 300 },
+  { key: 'statement', label: '公开讨论', desc: '轮流开口，谁在撒谎？', duration: 300 },
   { key: 'search', label: '自由搜证', desc: '翻找现场，线索不会自己说话', duration: 240 },
   { key: 'poll', label: '意向投票', desc: '先摸一次底，看看票往哪儿走', duration: 60 },
   { key: 'organize', label: '个人整理', desc: '把线索钉上你自己的推理板', duration: 300 },
