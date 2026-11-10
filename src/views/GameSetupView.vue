@@ -23,6 +23,7 @@ const joinCode = ref('')
 const showJoin = ref(false)
 const myName = ref(settings.state.playerName)
 const showSolo = ref(false)
+const activePanel = ref<'quick' | 'script'>('quick')
 
 const counts = [
   { n: 4, label: '紧凑' },
@@ -89,7 +90,7 @@ function startCustomOnline(pkg: ScriptPackage) {
 </script>
 
 <template>
-  <AppTopBar title="游戏大厅" sub="创建或加入一局" show-back />
+  <AppTopBar title="游戏大厅" sub="选择玩法与剧本" show-back />
 
   <main class="page setup-page">
     <section class="setup-hero">
@@ -97,11 +98,28 @@ function startCustomOnline(pkg: ScriptPackage) {
       <div>
         <div class="setup-hero__kicker">START A NEW CASE</div>
         <h1>开一局</h1>
-        <p>选择人数和题材，创建房间后把房号发给朋友。</p>
+        <p>快速创建一局，或者从剧本库挑一个故事。</p>
       </div>
     </section>
 
-    <section class="home-start">
+    <nav class="setup-modes" aria-label="游戏大厅功能">
+      <button
+        :class="{ 'setup-modes__btn--on': activePanel === 'quick' }"
+        @click="activePanel = 'quick'"
+      >
+        <strong>快速开局</strong>
+        <small>选人数与题材</small>
+      </button>
+      <button
+        :class="{ 'setup-modes__btn--on': activePanel === 'script' }"
+        @click="activePanel = 'script'"
+      >
+        <strong>挑选剧本</strong>
+        <small>剧本库或 AI 生成</small>
+      </button>
+    </nav>
+
+    <section v-show="activePanel === 'quick'" class="home-start">
       <div class="home-start__heading">
         <div>
           <div class="home-start__kicker">ROOM SETUP</div>
@@ -183,7 +201,12 @@ function startCustomOnline(pkg: ScriptPackage) {
       </div>
     </section>
 
-    <CustomScriptPanel @start-solo="startCustomSolo" @start-online="startCustomOnline" />
+    <div v-show="activePanel === 'script'">
+      <CustomScriptPanel
+        @start-solo="startCustomSolo"
+        @start-online="startCustomOnline"
+      />
+    </div>
 
     <section class="home-flow" aria-label="游戏流程">
       <span>阅读剧本</span>

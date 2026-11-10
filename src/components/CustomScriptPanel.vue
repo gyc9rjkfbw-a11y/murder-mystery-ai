@@ -135,13 +135,66 @@ function dateText(value: number): string {
     <div class="custom-scripts__head">
       <div>
         <div class="custom-scripts__kicker">CUSTOM STORY</div>
-        <h3 class="card__title" style="margin-bottom: 4px">自定义剧本工坊</h3>
-        <p class="card__hint">你写主题，AI 生成完整剧本；确认后由房主带进联机房间。</p>
+        <h3 class="card__title" style="margin-bottom: 4px">挑选剧本</h3>
+        <p class="card__hint">从剧本库选择已保存案件，或让 AI 按你的主题写一份新剧本。</p>
       </div>
       <span class="tag tag--gold">{{ settings.providerLabel }}</span>
     </div>
 
+    <div class="custom-scripts__library">
+      <div class="custom-scripts__library-head">
+        <div>
+          <strong>已保存剧本</strong>
+          <span>可直接用于联机房间或单人试玩</span>
+        </div>
+        <small>{{ store.records.length }} 个</small>
+      </div>
+
+      <div v-if="store.records.length === 0" class="custom-scripts__empty">
+        <p>剧本库还是空的</p>
+        <span>可以导入现成 JSON，或在下方让 AI 生成一份新剧本。</span>
+      </div>
+
+      <template v-else>
+        <div class="custom-scripts__list" role="listbox" aria-label="自定义剧本列表">
+          <button
+            v-for="record in store.records"
+            :key="record.id"
+            class="custom-script"
+            :class="{ 'custom-script--on': selected?.id === record.id }"
+            role="option"
+            :aria-selected="selected?.id === record.id"
+            @click="select(record.id)"
+          >
+            <span class="custom-script__main">
+              <strong>{{ record.title }}</strong>
+              <small>{{ record.playerCount }} 人 · {{ record.pkg.roles.length }} 个角色 · {{ dateText(record.updatedAt) }}</small>
+            </span>
+            <span class="tag">剧本</span>
+          </button>
+        </div>
+
+        <div v-if="selected" class="custom-scripts__selected">
+          <div>
+            <span>当前选中</span>
+            <strong>{{ selected.title }}</strong>
+            <small>{{ selected.playerCount }} 人 · {{ selected.pkg.private_clues?.length ?? 0 }} 条私有线索</small>
+          </div>
+          <button class="mini-btn" @click="removeSelected">删除</button>
+        </div>
+
+        <div class="custom-scripts__start">
+          <button class="btn btn--primary" @click="startSavedOnline">用此剧本创建联机房间</button>
+          <button class="btn btn--ghost" @click="startSavedSolo">单人带 AI 开局</button>
+        </div>
+      </template>
+    </div>
+
     <div class="custom-ai">
+      <div class="custom-ai__heading">
+        <strong>AI 按主题写剧本</strong>
+        <span>不会与最近生成的案件重复</span>
+      </div>
       <label class="field">
         <span class="field__label">你想写一个什么故事？</span>
         <textarea
@@ -215,7 +268,7 @@ function dateText(value: number): string {
     </article>
 
     <details class="custom-scripts__import">
-      <summary>导入现成剧本 JSON</summary>
+      <summary>导入 / 粘贴外部剧本</summary>
       <div class="custom-scripts__import-body">
         <div class="custom-scripts__actions">
           <button class="mini-btn mini-btn--gold" @click="fileInput?.click()">导入 JSON</button>
@@ -230,44 +283,6 @@ function dateText(value: number): string {
           <p v-if="importErrors.length > 8" class="tiny">另有 {{ importErrors.length - 8 }} 项错误未显示</p>
         </div>
 
-        <div v-if="store.records.length === 0" class="custom-scripts__empty">
-          <p>还没有导入过剧本。</p>
-          <span>可以先下载模板，改完后重新导入。</span>
-        </div>
-
-        <template v-else>
-          <div class="custom-scripts__list" role="listbox" aria-label="自定义剧本列表">
-            <button
-              v-for="record in store.records"
-              :key="record.id"
-              class="custom-script"
-              :class="{ 'custom-script--on': selected?.id === record.id }"
-              role="option"
-              :aria-selected="selected?.id === record.id"
-              @click="select(record.id)"
-            >
-              <span class="custom-script__main">
-                <strong>{{ record.title }}</strong>
-                <small>{{ record.playerCount }} 人 · {{ record.pkg.roles.length }} 个角色 · {{ dateText(record.updatedAt) }}</small>
-              </span>
-              <span class="tag">导入剧本</span>
-            </button>
-          </div>
-
-          <div v-if="selected" class="custom-scripts__selected">
-            <div>
-              <span>当前选中</span>
-              <strong>{{ selected.title }}</strong>
-              <small>{{ selected.playerCount }} 人 · {{ selected.pkg.private_clues?.length ?? 0 }} 条私有线索</small>
-            </div>
-            <button class="mini-btn" @click="removeSelected">删除</button>
-          </div>
-
-          <div class="custom-scripts__start">
-            <button class="btn btn--primary" @click="startSavedOnline">用此剧本创建联机房间</button>
-            <button class="btn btn--ghost" @click="startSavedSolo">单人带 AI 开局</button>
-          </div>
-        </template>
       </div>
     </details>
   </section>
