@@ -1,6 +1,11 @@
 import { defineStore } from 'pinia'
-import { computed, reactive } from 'vue'
-import { generateScript, GenerationError, type GenerateProgress } from '@/services/aiEngine'
+import { computed, reactive, ref } from 'vue'
+import {
+  generateScript,
+  GenerationError,
+  type GenerateProgress,
+  type GenerationResult,
+} from '@/services/aiEngine'
 import { makeBotStatement, makeBotVoteTarget } from '@/services/bots'
 import {
   CLUE_TIER_LABELS,
@@ -129,6 +134,7 @@ function emptyState(): GameState {
 export const useGameStore = defineStore('game', () => {
   const settings = useSettingsStore()
   const state = reactive<GameState>(emptyState())
+  const customDraft = ref<ScriptPackage | null>(null)
 
   /** 待落地的房间配置 */
   const setup = reactive({
@@ -444,6 +450,7 @@ export const useGameStore = defineStore('game', () => {
 
   function resetAll() {
     Object.assign(state, emptyState())
+    customDraft.value = null
     Object.assign(generating, {
       busy: false,
       progress: null,
@@ -536,6 +543,76 @@ export const useGameStore = defineStore('game', () => {
     state.roomCode = code.trim().toUpperCase() || state.roomCode
   }
 
+  async function runGeneration(
+    theme: string,
+    playerCount: number,
+    offlineStepDelayMs?: number,
+  ): Promise<GenerationResult> {
+    const ai = settings.state.ai
+    if (ai.provider === 'openai' && !String(ai.apiKey ?? '').trim()) {
+      throw new GenerationError('尚未填写 API Key', [
+        '你选择了「真实大模型」，但没有配置密钥。',
+        '可以到「设置」里补全，或切换回离线模拟引擎。',
+      ])
+    }
+
+    const historyStorage = scriptHistoryStore()
+    const history = loadScriptHistory(historyStorage)
+    const result = await generateScript({
+      playerCount,
+      theme,
+      config: { ...ai },
+      uniqueness: {
+        nonce:
+          typeof crypto !== 'undefined' && 'randomUUID' in crypto
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        history,
+      },
+      offlineStepDelayMs,
+      onProgress: (progress) => {
+        generating.progress = progress
+      },
+    })
+    persistScriptHistory(historyStorage, addScriptHistory(history, result.pkg))
+    return result
+  }
+
+  async function generateCustomDraft(
+    theme: string,
+    playerCount: number,
+    offlineStepDelayMs?: number,
+  ): Promise<{ ok: boolean; pkg?: ScriptPackage; errors: string[]; warnings: string[] }> {
+    if (!theme.trim()) return { ok: false, errors: ['请先填写剧本主题'], warnings: [] }
+    if (generating.busy) return { ok: false, errors: ['已有剧本正在生成'], warnings: [] }
+    const count = pacingFor(playerCount).playerCount
+    generating.busy = true
+    generating.error = ''
+    generating.detail = []
+    generating.rewrites = 0
+    generating.progress = { step: 0, totalSteps: 4, label: '正在读取你的主题……' }
+    customDraft.value = null
+
+    try {
+      const result = await runGeneration(theme.trim(), count, offlineStepDelayMs)
+      customDraft.value = result.pkg
+      generating.provider = result.provider
+      generating.rewrites = result.rewrites
+      return { ok: true, pkg: result.pkg, errors: [], warnings: result.warnings }
+    } catch (error) {
+      const failure = error as GenerationError
+      generating.error = failure.message || '剧本生成失败'
+      generating.detail = failure.detail ?? []
+      return {
+        ok: false,
+        errors: [generating.error, ...generating.detail],
+        warnings: [],
+      }
+    } finally {
+      generating.busy = false
+    }
+  }
+
   /** 房主点击「开始游戏」：进入剧本下发 */
   async function dealScript() {
     /**
@@ -554,33 +631,7 @@ export const useGameStore = defineStore('game', () => {
     setPhase('dealing')
 
     try {
-      const ai = settings.state.ai
-      const historyStorage = scriptHistoryStore()
-      const history = loadScriptHistory(historyStorage)
-      // 选了「真实大模型」却没填 Key：这一局是不可能成功的，直接给出可执行的失败说明，
-      // 不再白等两次请求超时（下面的 catch 会走同一套文案与兜底按钮）。
-      if (ai.provider === 'openai' && !String(ai.apiKey ?? '').trim()) {
-        throw new GenerationError('尚未填写 API Key', [
-          '你选择了「真实大模型」，但没有配置密钥。',
-          '可以到「设置」里补全，或点下面的按钮改用离线引擎（本地生成，不联网）。',
-        ])
-      }
-      const result = await generateScript({
-        playerCount: setup.playerCount,
-        theme: setup.theme,
-        config: { ...settings.state.ai },
-        uniqueness: {
-          nonce:
-            typeof crypto !== 'undefined' && 'randomUUID' in crypto
-              ? crypto.randomUUID()
-              : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          history,
-        },
-        onProgress: (p) => {
-          generating.progress = p
-        },
-      })
-      persistScriptHistory(historyStorage, addScriptHistory(history, result.pkg))
+      const result = await runGeneration(setup.theme, setup.playerCount)
       state.script = result.pkg
       generating.provider = result.provider
       generating.rewrites = result.rewrites
@@ -1193,6 +1244,7 @@ export const useGameStore = defineStore('game', () => {
     state,
     setup,
     generating,
+    customDraft,
     timer,
     roundStartedAt,
     // getters
@@ -1230,6 +1282,7 @@ export const useGameStore = defineStore('game', () => {
     resetAll,
     createRoom,
     startCustomScript,
+    generateCustomDraft,
     joinRoom,
     dealScript,
     confirmReading,

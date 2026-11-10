@@ -44,6 +44,8 @@ export interface GenerateRequest {
     nonce: string
     history: ScriptHistoryEntry[]
   }
+  /** 离线引擎步骤间隔；测试可设为 0。 */
+  offlineStepDelayMs?: number
   onProgress?: (p: GenerateProgress) => void
   signal?: AbortSignal
 }
@@ -227,6 +229,7 @@ export async function generateWithOffline(req: GenerateRequest): Promise<Generat
   const pkg = await generateOfflineScript({
     playerCount: req.playerCount,
     theme: req.theme,
+    stepDelay: req.offlineStepDelayMs,
     onProgress: req.onProgress,
   })
   const check = validateScriptPackage(pkg, req.playerCount)
