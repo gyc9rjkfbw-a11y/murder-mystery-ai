@@ -171,6 +171,21 @@ onMounted(refreshHistoryCount)
         </p>
       </div>
 
+      <div class="field">
+        <label class="field__label">单次最大输出 Token</label>
+        <input
+          v-model.number="ai.maxTokens"
+          class="input"
+          type="number"
+          min="1024"
+          max="32768"
+          step="512"
+        />
+        <p class="tiny muted" style="margin: 6px 0 0">
+          长剧本采用逐角色生成；建议至少 8192。若模型上限较低，请按服务商限制填写。
+        </p>
+      </div>
+
       <div class="btn-row">
         <button class="btn" :disabled="testing" @click="runTest">
           {{ testing ? '测试中…' : '测试连接' }}

@@ -24,6 +24,8 @@ export interface GenerateProgress {
   totalSteps: number
   /** 当前步骤说明 */
   label: string
+  /** 当前管线的全部步骤名称（在线分阶段生成时动态变化） */
+  labels?: string[]
 }
 
 export interface OfflineGenerateOptions {

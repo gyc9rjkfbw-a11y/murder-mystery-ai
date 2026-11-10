@@ -14,9 +14,10 @@ const settings = useSettingsStore()
 const progress = computed(() => game.generating.progress)
 const steps = computed(() => {
   const total = progress.value?.totalSteps ?? THREE_STEP_PIPELINE.length
+  const labels = progress.value?.labels ?? THREE_STEP_PIPELINE
   return Array.from({ length: total }, (_, i) => ({
     index: i,
-    label: THREE_STEP_PIPELINE[i] ?? `第 ${i + 1} 步`,
+    label: labels[i] ?? `第 ${i + 1} 步`,
   }))
 })
 

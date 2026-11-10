@@ -32,6 +32,7 @@ const DEFAULT_AI: AiConfig = {
   apiKey: '',
   model: 'deepseek-chat',
   temperature: 1.0,
+  maxTokens: 8192,
 }
 
 function defaultState(): SettingsState {

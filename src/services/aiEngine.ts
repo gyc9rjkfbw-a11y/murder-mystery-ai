@@ -1,9 +1,17 @@
 import type { ScriptPackage } from '@/types/script'
 import { generateOfflineScript, type GenerateProgress } from './offlineEngine'
 import { pacingFor } from './rules'
-import { buildUserPrompt, SYSTEM_PROMPT } from './systemPrompt'
-import { isLengthViolation, isSideQuestViolation, validateScriptPackage } from './validator'
+import { validateScriptPackage } from './validator'
 import { findDuplicateScript, type ScriptHistoryEntry } from './scriptHistory'
+import {
+  buildRoleScriptPrompt,
+  buildStoryBiblePrompt,
+  mergeRoleScript,
+  normalizeStoryBible,
+  parseRoleScriptResponse,
+  ROLE_SCRIPT_SYSTEM_PROMPT,
+  STORY_BIBLE_SYSTEM_PROMPT,
+} from './stagedScript'
 
 /** 生成进度（透传给 UI，避免各处重复 import） */
 export type { GenerateProgress }
@@ -34,6 +42,8 @@ export interface AiConfig {
   /** 例如 deepseek-chat */
   model: string
   temperature: number
+  /** 单次模型调用的最大输出 token 数。 */
+  maxTokens: number
 }
 
 export interface GenerateRequest {
@@ -72,6 +82,7 @@ export class GenerationError extends Error {
 /** 单次真实调用的返回 */
 interface RawCompletion {
   content: string
+  finishReason?: string
 }
 
 /** 剥掉模型可能多写的 markdown 代码块围栏 */
@@ -114,22 +125,21 @@ export function buildDuplicateRewriteInstruction(duplicateTheme: string): string
 4. 只输出完整 JSON。`
 }
 
-async function callOpenAI(
+type StagedCaller = (
   req: GenerateRequest,
-  corrective?: string,
+  system: string,
+  user: string,
+  maxTokens: number,
+) => Promise<RawCompletion>
+
+async function callModel(
+  req: GenerateRequest,
+  system: string,
+  user: string,
+  maxTokens: number,
 ): Promise<RawCompletion> {
-  const { config, playerCount, theme, signal } = req
+  const { config, signal } = req
   const url = config.baseUrl.replace(/\/+$/, '') + '/chat/completions'
-  const userContent =
-    buildUserPrompt(playerCount, theme, req.uniqueness
-      ? {
-          nonce: req.uniqueness.nonce,
-          avoid: req.uniqueness.history.map((item) => ({
-            theme: item.theme,
-            murderer: item.murderer,
-          })),
-        }
-      : undefined) + (corrective ? `\n\n${corrective}` : '')
 
   let res: Response
   try {
@@ -142,17 +152,18 @@ async function callOpenAI(
       body: JSON.stringify({
         model: config.model,
         temperature: config.temperature,
+        max_tokens: maxTokens,
         stream: false,
         response_format: { type: 'json_object' },
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: userContent },
+          { role: 'system', content: system },
+          { role: 'user', content: user },
         ],
       }),
       signal,
     })
-  } catch (e) {
-    throw new GenerationError(`无法连接到大模型服务：${(e as Error).message}`, [
+  } catch (error) {
+    throw new GenerationError(`无法连接到大模型服务：${(error as Error).message}`, [
       `请求地址：${url}`,
       '请检查 Base URL 是否正确、是否被浏览器跨域策略（CORS）拦截。',
     ])
@@ -164,64 +175,138 @@ async function callOpenAI(
   }
 
   const json = (await res.json()) as {
-    choices?: { message?: { content?: string } }[]
+    choices?: { message?: { content?: string }; finish_reason?: string }[]
   }
-  const content = json.choices?.[0]?.message?.content ?? ''
+  const choice = json.choices?.[0]
+  const content = choice?.message?.content ?? ''
   if (!content) throw new GenerationError('大模型返回内容为空')
-  return { content }
+  return { content, finishReason: choice?.finish_reason }
 }
 
-/** 调用 OpenAI 兼容端点，字数不合规时自动要求重写一次 */
-export async function generateWithOpenAI(req: GenerateRequest): Promise<GenerationResult> {
+function maxOutputTokens(req: GenerateRequest): number {
+  return Math.max(1024, Math.min(32768, Math.floor(Number(req.config.maxTokens) || 8192)))
+}
+
+function progressPayload(
+  step: number,
+  totalSteps: number,
+  labels: string[],
+  label: string,
+): GenerateProgress {
+  return { step, totalSteps, labels, label }
+}
+
+/** 两阶段生成：案件骨架一次，完整角色剧本逐角色生成。 */
+export async function generateWithOpenAI(
+  req: GenerateRequest,
+  caller: StagedCaller = callModel,
+): Promise<GenerationResult> {
   const warnings: string[] = []
   let rewrites = 0
-  let raw = (await callOpenAI(req)).content
+  const maxTokens = maxOutputTokens(req)
+  const totalSteps = req.playerCount + 2
+  const labels = [
+    '生成全局真相与人物骨架',
+    ...Array.from({ length: req.playerCount }, (_, index) => `撰写第 ${index + 1} 个角色剧本`),
+    '合并角色剧本并执行最终校验',
+  ]
+  req.onProgress?.(progressPayload(1, totalSteps, labels, labels[0]))
+
+  let storyPrompt = buildStoryBiblePrompt(req.playerCount, req.theme, req.uniqueness
+    ? {
+        nonce: req.uniqueness.nonce,
+        avoid: req.uniqueness.history.map((item) => ({
+          theme: item.theme,
+          murderer: item.murderer,
+        })),
+      }
+    : undefined)
+  let bible: ScriptPackage | null = null
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(extractJSON(raw))
-    } catch (e) {
-      if (attempt === 0) {
-        // 连 JSON 都没解析出来，直接让它重来一次
+    const raw = await caller(req, STORY_BIBLE_SYSTEM_PROMPT, storyPrompt, maxTokens)
+    if (raw.finishReason === 'length') {
+      throw new GenerationError('案件骨架输出被截断', [
+        `模型达到单次 ${maxTokens} token 输出上限。`,
+        '请在设置中提高最大输出 Token，或换用支持更长输出的模型。',
+      ])
+    }
+    const parsed = normalizeStoryBible(raw.content, req.playerCount)
+    if (parsed.ok && parsed.pkg) {
+      const duplicate = findDuplicateScript(parsed.pkg, req.uniqueness?.history ?? [])
+      if (duplicate && attempt === 0) {
         rewrites += 1
-        warnings.push(`第 1 次返回不是合法 JSON，已自动重写`)
-        raw = (await callOpenAI(req, '上一次的输出不是合法 JSON，请只输出一个完整 JSON 对象。')).content
+        warnings.push(`案件骨架与最近对局「${duplicate.theme}」重复，已重新设计`)
+        storyPrompt += `\n\n${buildDuplicateRewriteInstruction(duplicate.theme)}\n当前阶段只重新输出案件骨架，所有 full_script 仍必须为空。`
         continue
       }
-      throw new GenerationError(`返回内容不是合法 JSON：${(e as Error).message}`, [raw.slice(0, 400)])
-    }
-
-    const check = validateScriptPackage(parsed, req.playerCount)
-    if (check.ok && check.data) {
-      const duplicate = findDuplicateScript(check.data, req.uniqueness?.history ?? [])
       if (duplicate) {
-        if (attempt === 0) {
-          rewrites += 1
-          warnings.push(`生成结果与最近对局「${duplicate.theme}」重复，已自动重新设计`)
-          raw = (await callOpenAI(req, buildDuplicateRewriteInstruction(duplicate.theme))).content
-          continue
-        }
-        throw new GenerationError('生成结果与最近对局重复', [
-          `系统检测到这次剧本与「${duplicate.theme}」重复。`,
-          '请换一个题材再试，或在设置中清空最近剧本记录后重启生成。',
+        throw new GenerationError('案件骨架与最近对局重复', [
+          `系统检测到案件骨架与「${duplicate.theme}」重复。`,
+          '请更换主题，或清空最近剧本记录后重试。',
         ])
       }
-      return { pkg: check.data, provider: 'openai', raw, rewrites, warnings }
+      bible = parsed.pkg
+      break
     }
-
-    const needsRewrite = isLengthViolation(check.errors) || isSideQuestViolation(check.errors)
-    if (attempt === 0 && needsRewrite) {
+    if (attempt === 0) {
       rewrites += 1
-      warnings.push('首次生成未通过字数/支线自检，已自动要求模型重写')
-      raw = (await callOpenAI(req, buildRewriteInstruction(check.errors, req.playerCount))).content
+      warnings.push('案件骨架未通过校验，已自动重写一次')
+      storyPrompt += `\n\n【上一次案件骨架校验失败】\n${parsed.errors.join('\n')}\n请修正后重新输出完整 JSON。`
       continue
     }
-
-    throw new GenerationError('剧本未通过事实校验', check.errors)
+    throw new GenerationError('案件骨架生成失败', parsed.errors)
   }
 
-  throw new GenerationError('剧本生成失败：重写后仍未通过校验')
+  if (!bible) throw new GenerationError('案件骨架生成失败')
+  let assembled = bible
+
+  for (let index = 0; index < assembled.roles.length; index += 1) {
+    const role = assembled.roles[index]
+    const step = index + 2
+    const label = `正在撰写 ${role.name}（${index + 1}/${assembled.roles.length}）`
+    req.onProgress?.(progressPayload(step, totalSteps, labels, label))
+    let rolePrompt = buildRoleScriptPrompt(bible, role.name, req.playerCount)
+    let generated = false
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const raw = await caller(req, ROLE_SCRIPT_SYSTEM_PROMPT, rolePrompt, maxTokens)
+      if (raw.finishReason === 'length') {
+        throw new GenerationError(`${role.name} 的剧本输出被截断`, [
+          `模型达到单次 ${maxTokens} token 输出上限。`,
+          '请在设置中提高最大输出 Token；角色剧本已拆分生成，不应再出现整桌内容截断。',
+        ])
+      }
+      const parsed = parseRoleScriptResponse(raw.content, req.playerCount)
+      if (parsed.ok && parsed.full_script) {
+        assembled = mergeRoleScript(assembled, role.name, parsed.full_script)
+        generated = true
+        break
+      }
+      if (attempt === 0) {
+        rewrites += 1
+        warnings.push(`${role.name} 的剧本未达标，已要求单独重写`)
+        rolePrompt += `\n\n【上一次角色正文不合格】\n${parsed.errors.join('\n')}\n必须重新写完整角色正文，不要解释。`
+        continue
+      }
+      throw new GenerationError(`${role.name} 的剧本生成失败`, parsed.errors)
+    }
+    if (!generated) throw new GenerationError(`${role.name} 的剧本生成失败`)
+  }
+
+  const finalStep = totalSteps
+  req.onProgress?.(progressPayload(finalStep, totalSteps, labels, labels[labels.length - 1]))
+  const finalCheck = validateScriptPackage(assembled, req.playerCount)
+  if (!finalCheck.ok || !finalCheck.data) {
+    throw new GenerationError('完整剧本未通过最终校验', finalCheck.errors)
+  }
+  return {
+    pkg: finalCheck.data,
+    provider: 'openai',
+    raw: JSON.stringify(finalCheck.data),
+    rewrites,
+    warnings,
+  }
 }
 
 /** 离线生成（内置剧本库已按人数产出合规长度，无需重写） */
