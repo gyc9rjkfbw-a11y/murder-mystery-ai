@@ -1,6 +1,11 @@
-export type GameNavItem = 'role' | 'clues' | 'talk' | 'phase'
+export type AppNavItem = 'home' | 'game' | 'social' | 'mine'
+
+export const APP_NAV_ITEMS: AppNavItem[] = ['home', 'game', 'social', 'mine']
 
 const GAME_ROUTES = new Set([
+  'room',
+  'lobby',
+  'dealing',
   'reading',
   'statement',
   'search',
@@ -10,10 +15,13 @@ const GAME_ROUTES = new Set([
   'reveal',
 ])
 
-export function gameNavVisible(routeName: string | null | undefined, hasScript: boolean): boolean {
-  return hasScript && !!routeName && GAME_ROUTES.has(routeName)
+export function isGameRoute(routeName: string | null | undefined): boolean {
+  return !!routeName && GAME_ROUTES.has(routeName)
 }
 
-export function availableGameNavItems(online: boolean): GameNavItem[] {
-  return online ? ['role', 'clues', 'talk', 'phase'] : ['role', 'clues', 'phase']
+export function navTabForRoute(routeName: string | null | undefined): AppNavItem | null {
+  if (routeName === 'home') return 'home'
+  if (routeName === 'settings') return 'mine'
+  if (isGameRoute(routeName)) return 'game'
+  return null
 }

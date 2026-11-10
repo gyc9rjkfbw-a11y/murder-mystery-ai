@@ -1,13 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import GameBottomNav from '@/components/GameBottomNav.vue'
+import AppBottomNav from '@/components/AppBottomNav.vue'
 import LaunchIntro from '@/components/LaunchIntro.vue'
 import ToastHost from '@/components/ToastHost.vue'
 import TalkSheet from '@/components/TalkSheet.vue'
 import { PHASE_ROUTE } from '@/services/net/protocol'
-import { gameNavVisible } from '@/services/gameNavigation'
-import { useGameStore } from '@/stores/game'
 import { useNetStore } from '@/stores/net'
 import { useSettingsStore } from '@/stores/settings'
 
@@ -21,13 +19,11 @@ import { useSettingsStore } from '@/stores/settings'
  *   只听 phase 会导致「建房/加入后停在首页」，所以必须把 inRoom 一起听。
  */
 const net = useNetStore()
-const game = useGameStore()
 const settings = useSettingsStore()
 const router = useRouter()
 const route = useRoute()
-const hasGameNav = computed(() =>
-  gameNavVisible(route.name as string | undefined, !!game.state.script),
-)
+const ACTION_DOCK_ROUTES = new Set(['reading', 'statement', 'search', 'poll', 'organize', 'voting'])
+const hasActionDock = computed(() => ACTION_DOCK_ROUTES.has(route.name as string))
 
 /**
  * 启动时同步一次「我的档案」：
@@ -50,7 +46,7 @@ watch(
 </script>
 
 <template>
-  <div class="shell" :class="{ 'shell--game-nav': hasGameNav }">
+  <div class="shell shell--app-nav" :class="{ 'shell--action-dock': hasActionDock }">
     <router-view v-slot="{ Component }">
       <Transition name="route" mode="out-in">
         <div :key="route.path" class="route-view">
@@ -60,7 +56,7 @@ watch(
     </router-view>
     <!-- 牌桌沟通（语音 + 公屏）：只挂一份，入口在 AppTopBar 上；内部用 Teleport 到 body -->
     <TalkSheet v-if="net.inRoom" />
-    <GameBottomNav />
+    <AppBottomNav />
     <ToastHost />
     <LaunchIntro />
   </div>

@@ -1,8 +1,16 @@
-.shell--game-nav .page {
+.shell--app-nav .page {
+  padding-bottom: 92px;
+}
+
+.shell--app-nav .home-page {
+  padding-bottom: 104px;
+}
+
+.shell--app-nav.shell--action-dock .page {
   padding-bottom: 188px;
 }
 
-.shell--game-nav .dock {
+.shell--app-nav .dock {
   bottom: calc(58px + env(safe-area-inset-bottom));
   padding-bottom: 10px;
   background: linear-gradient(180deg, rgba(10, 12, 18, 0), rgba(10, 12, 18, 0.94) 38%);
@@ -111,6 +119,47 @@
   border-radius: 50%;
   background: var(--ok);
   box-shadow: 0 0 8px rgba(78, 168, 122, 0.8);
+}
+
+.social-empty {
+  padding: 12px 2px 4px;
+  text-align: center;
+}
+
+.social-empty__avatar {
+  display: grid;
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 11px;
+  place-items: center;
+  border: 1px solid rgba(216, 169, 91, 0.3);
+  border-radius: 50%;
+  background: rgba(216, 169, 91, 0.08);
+  font-size: 30px;
+}
+
+.social-empty h4 {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--serif);
+  font-size: 18px;
+}
+
+.social-empty > p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.social-empty__note {
+  padding: 11px 12px;
+  margin: 16px 0 12px;
+  border: 1px dashed rgba(216, 169, 91, 0.22);
+  border-radius: 10px;
+  background: rgba(216, 169, 91, 0.035);
+  color: var(--text-dim);
+  font-size: 10.5px;
+  line-height: 1.7;
 }
 
 .game-quick__hero {
