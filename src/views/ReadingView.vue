@@ -103,8 +103,8 @@ const privateClues = computed(() =>
 )
 
 const wordCount = computed(() => scriptLength(role.value?.full_script ?? ''))
-/** 剧本超过 900 字就启用目录导航与时间高亮（6 人局 1000-1200 字） */
-const longScript = computed(() => wordCount.value > 900)
+/** 沉浸版剧本统一启用目录导航与时间高亮（4/5/6 人局均为 1500 字以上） */
+const longScript = computed(() => wordCount.value > 1200)
 const sideQuests = computed(() => role.value?.side_quests ?? [])
 
 const readDone = computed(() => game.selfSeat?.readConfirmed === true)

@@ -48,8 +48,8 @@ export const PACING_RULES: Record<number, PacingRule> = {
     searchPerRound: 0,
     readingSeconds: 10 * 60,
     roundSeconds: 4 * 60,
-    scriptMin: 600,
-    scriptMax: 800,
+    scriptMin: 1500,
+    scriptMax: 1900,
     accelerateVotes: 3,
     privilegeRound: 2,
     sideQuestMin: 0,
@@ -63,8 +63,8 @@ export const PACING_RULES: Record<number, PacingRule> = {
     searchPerRound: 0,
     readingSeconds: 15 * 60,
     roundSeconds: 5 * 60,
-    scriptMin: 800,
-    scriptMax: 1000,
+    scriptMin: 1900,
+    scriptMax: 2400,
     accelerateVotes: 4,
     privilegeRound: 2,
     sideQuestMin: 0,
@@ -78,8 +78,8 @@ export const PACING_RULES: Record<number, PacingRule> = {
     searchPerRound: 2,
     readingSeconds: 20 * 60,
     roundSeconds: 6 * 60,
-    scriptMin: 1000,
-    scriptMax: 1200,
+    scriptMin: 2300,
+    scriptMax: 2800,
     accelerateVotes: 5,
     privilegeRound: 2,
     sideQuestMin: 1,
@@ -97,7 +97,7 @@ export function pacingFor(playerCount: number): PacingRule {
 
 /**
  * 统计剧本字数：按**非空白字符**计（中文字符逐个计数）。
- * 产品规范里的「600-800 字」「1000-1200 字」都以此口径为准，
+ * 产品规范里的「1500-1900 字」「2300-2800 字」都以此口径为准，
  * 换行与缩进不计入，避免排版差异导致字数误判。
  */
 export function scriptLength(text: string): number {

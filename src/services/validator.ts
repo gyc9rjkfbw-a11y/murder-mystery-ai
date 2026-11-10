@@ -12,7 +12,7 @@ import { CLUE_TIER_LABELS, pacingFor, scriptLength } from './rules'
  *   2. 角色数 == game_config.player_count == 房间人数
  *   3. 恰好一名凶手，且 global_truth.murderer_name 指向他/她
  *   4. 每个角色的 full_script / surface_task / deep_task / personal_timeline 非空
- *   5. **字数自检**：按人数执行 600-800 / 800-1000 / 1000-1200 的硬性字数区间，
+ *   5. **字数自检**：按人数执行 1500-1900 / 1900-2400 / 2300-2800 的硬性字数区间，
  *      超出即拦截（线上引擎会据此自动要求 AI 重写）
  *   6. 6 人局每个角色必须有独立支线任务（防边缘化）
  *   7. 凶手特权不得直接点名凶手（模糊度检查）
@@ -107,7 +107,7 @@ export function validateScriptPackage(
       if (!isNonEmptyString(r?.full_script)) {
         errors.push(`${tag}.full_script 缺失`)
       } else {
-        // 字数自检：4 人 600-800 / 5 人 800-1000 / 6 人 1000-1200
+        // 字数自检：4 人 1500-1900 / 5 人 1900-2400 / 6 人 2300-2800
         const len = scriptLength(r.full_script)
         if (len > rule.scriptMax) {
           errors.push(

@@ -44,7 +44,7 @@ export interface Role {
   /**
    * 完整沉浸式剧本。
    * 字数由 `player_count` 决定（见 src/services/rules.ts）：
-   * 4 人 600-800 / 5 人 800-1000 / 6 人 1000-1200（非空白字符）。
+   * 4 人 1500-1900 / 5 人 1900-2400 / 6 人 2300-2800（非空白字符）。
    */
   full_script: string
   /**
