@@ -224,7 +224,17 @@ export type ClientMsg =
    * `playerId` / `avatar` 可选：带上后服务器会把昵称头像记进你的档案、
    * 并在复盘时给你记一局战绩（老客户端不带也照常能玩）。
    */
-  | { t: 'create'; name: string; playerCount: number; theme: string; proto: number; playerId?: string; avatar?: string }
+  | {
+      t: 'create'
+      name: string
+      playerCount: number
+      theme: string
+      proto: number
+      playerId?: string
+      avatar?: string
+      /** 房主导入的完整自定义剧本；服务器会重新校验后使用。 */
+      script?: ScriptPackage
+    }
   /** 用房号加入 */
   | { t: 'join'; name: string; roomCode: string; proto: number; playerId?: string; avatar?: string }
   /** 断线重连（同一个座位换个连接回来） */

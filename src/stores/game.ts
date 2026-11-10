@@ -10,6 +10,7 @@ import {
   type RoundTheme,
 } from '@/services/rules'
 import type { ClueItem, Role, ScriptPackage } from '@/types/script'
+import { validateScriptPackage } from '@/services/validator'
 import {
   AVATARS,
   makeRoomCode,
@@ -472,6 +473,40 @@ export const useGameStore = defineStore('game', () => {
     }))
     state.seats = [self, ...bots]
     setPhase('room')
+  }
+
+  /** 直接使用导入的自定义剧本开局，跳过 AI 生成与下发阶段。 */
+  function startCustomScript(pkg: ScriptPackage): { ok: boolean; errors: string[] } {
+    const checked = validateScriptPackage(pkg, pkg.roles.length)
+    if (!checked.ok || !checked.data) {
+      return { ok: false, errors: checked.errors }
+    }
+
+    const data = checked.data
+    createRoom(data.roles.length, data.game_config.theme)
+    state.script = data
+    assignRoles(data)
+    state.clues = buildClues(data)
+    state.statements = []
+    state.statementIndex = 0
+    state.votes = []
+    state.strawPoll = []
+    state.settlement = []
+    state.roundSummaries = []
+    state.releasedTiers = []
+    state.accelerateSuggested = false
+    state.accelerateReason = ''
+    state.privilege = null
+    state.detectiveHints = 0
+    state.notes = ''
+    state.round = 1
+    hintRounds.length = 0
+    setup.played = true
+    state.seats.forEach((seat) => {
+      seat.ready = true
+    })
+    setPhase('reading')
+    return { ok: true, errors: [] }
   }
 
   /** 加入房间（前端演示版：按房间号生成一个本地房间） */
@@ -1163,6 +1198,7 @@ export const useGameStore = defineStore('game', () => {
     setPhase,
     resetAll,
     createRoom,
+    startCustomScript,
     joinRoom,
     dealScript,
     confirmReading,

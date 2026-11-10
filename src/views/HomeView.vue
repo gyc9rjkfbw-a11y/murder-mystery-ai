@@ -3,12 +3,14 @@ import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AppTopBar from '@/components/AppTopBar.vue'
 import BrandMark from '@/components/BrandMark.vue'
+import CustomScriptPanel from '@/components/CustomScriptPanel.vue'
 import InstallBanner from '@/components/InstallBanner.vue'
 import { useToast } from '@/composables/useToast'
 import { PRESET_THEMES } from '@/services/templates'
 import { useGameStore } from '@/stores/game'
 import { useNetStore } from '@/stores/net'
 import { randomNickname, useSettingsStore } from '@/stores/settings'
+import type { ScriptPackage } from '@/types/script'
 
 const router = useRouter()
 const game = useGameStore()
@@ -74,6 +76,22 @@ function createRoom() {
 
 function toggleDemo() {
   settings.state.demoMode = !settings.state.demoMode
+}
+
+function startCustomSolo(pkg: ScriptPackage) {
+  saveName()
+  const started = game.startCustomScript(pkg)
+  if (!started.ok) {
+    toast.error(started.errors[0] ?? '自定义剧本无法开局')
+    return
+  }
+  router.push('/reading')
+}
+
+function startCustomOnline(pkg: ScriptPackage) {
+  const name = saveName()
+  net.createRoom(name, pkg.roles.length, pkg.game_config.theme, pkg)
+  router.push('/lobby')
 }
 </script>
 
@@ -180,6 +198,8 @@ function toggleDemo() {
         <button class="btn btn--ghost btn--sm" @click="createRoom">单人开一局</button>
       </div>
     </section>
+
+    <CustomScriptPanel @start-solo="startCustomSolo" @start-online="startCustomOnline" />
 
     <section class="home-flow" aria-label="游戏流程">
       <span>阅读剧本</span>

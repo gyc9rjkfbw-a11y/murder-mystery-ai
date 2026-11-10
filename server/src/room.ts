@@ -36,6 +36,7 @@ import { censorSeat } from './censor'
 import { phaseText } from './log'
 import { buildScriptPackage } from './script'
 import type { RoomOptions, RoomSeat } from './types'
+import { validateScriptPackage } from '@/services/validator'
 
 /** 个人整理时长（秒）；与前端 `stores/game.ts` 的 ORGANIZE_SECONDS 保持一致 */
 const ORGANIZE_SECONDS = 300
@@ -231,6 +232,8 @@ export class Room {
   private phaseScale: number
   /** 这一局的战绩是否已经交给档案库（保证每局每座只记一次） */
   private statsRecorded = false
+  /** 房主提供的自定义剧本；存在时不走服务器模板生成。 */
+  private customScript: ScriptPackage | null
   /** 复盘结算回调（由 app.ts 注入，用来写玩家档案） */
   private onGameSettled?: (rows: import('./types').SettledPlayerRow[]) => void
 
@@ -242,6 +245,7 @@ export class Room {
     this.onGameSettled = options.onGameSettled
     this.phaseScale = options.phaseScale && options.phaseScale > 0 ? options.phaseScale : 1
     this.nowFn = options.now ?? Date.now
+    this.customScript = options.script ?? null
     const pacing = pacingFor(options.playerCount)
     this.maxRounds = pacing.maxRounds
     this.searchRounds = pacing.searchRounds
@@ -645,7 +649,16 @@ export class Room {
     this.setPhase('dealing')
     this.broadcastView()
 
-    const built = await buildScriptPackage(this.playerCount, this.theme)
+    const built = this.customScript
+      ? (() => {
+          const checked = validateScriptPackage(this.customScript, this.playerCount)
+          return {
+            ok: checked.ok && !!checked.data,
+            pkg: checked.data ?? null,
+            errors: checked.errors,
+          }
+        })()
+      : await buildScriptPackage(this.playerCount, this.theme)
     this.dealing = false
     if (!built.ok || !built.pkg) {
       this.log(`剧本生成失败：${built.errors.join('；')}`)

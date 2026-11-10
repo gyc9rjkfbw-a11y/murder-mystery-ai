@@ -24,6 +24,7 @@ import type { AddressInfo } from 'node:net'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { NET_PORT, PROTOCOL_VERSION, type ClientMsg, type ServerMsg } from '@/services/net/protocol'
 import { PRESET_THEMES } from '@/services/templates'
+import { validateScriptPackage } from '@/services/validator'
 import { createApiHandler } from './api'
 import { createLogger } from './log'
 import { Room, sanitizeName, uniqueRoomCode } from './room'
@@ -255,12 +256,30 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
             return
           }
           const theme = String(msg.theme ?? '').trim() || PRESET_THEMES[0].theme
+          let customScript: import('@/types/script').ScriptPackage | null = null
+          if (msg.script) {
+            if (JSON.stringify(msg.script).length > 1_000_000) {
+              fail(socket, '自定义剧本超过 1 MB，服务器拒绝接收', 'script-too-large')
+              return
+            }
+            const checked = validateScriptPackage(msg.script, playerCount)
+            if (!checked.ok || !checked.data) {
+              fail(
+                socket,
+                `自定义剧本校验失败：${checked.errors.slice(0, 3).join('；')}`,
+                'script-invalid',
+              )
+              return
+            }
+            customScript = checked.data
+          }
           const code = uniqueRoomCode(rooms)
           const logger = createLogger(!quiet, `房间 ${code}`)
           const room = new Room({
             code,
             playerCount,
             theme,
+            script: customScript,
             logger,
             phaseScale: options.phaseScale,
             // 复盘结算 → 给每个有档案的真人记一局战绩（服务器权威，客户端说了不算）

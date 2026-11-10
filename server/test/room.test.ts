@@ -1840,7 +1840,34 @@ async function testRoomUnit(): Promise<void> {
  * ------------------------------------------------------------------ */
 
 async function testTlsArgs(): Promise<void> {
-  console.log('\n=== 14a. TLS 参数解析（命令行 / 环境变量 / 都没有） ===')
+console.log('\n=== 13b. 联机房间使用房主自定义剧本 ===')
+{
+  const built = await buildScriptPackage(4, THEME)
+  const custom = must(built.pkg, '自定义剧本测试包')
+  const room = new Room({
+    code: 'CSTM1',
+    playerCount: 4,
+    theme: custom.game_config.theme,
+    script: custom,
+    logger: () => {},
+  })
+  const seat = room.addSeat({
+    name: '房主',
+    isBot: false,
+    connected: true,
+    ready: true,
+    host: true,
+  })
+  await room.start(seat)
+  check(
+    '房主自定义剧本跳过本地生成并直接开局',
+    room.started && room.phase === 'reading' && room.script?.game_config.theme === THEME,
+    `${room.phase} / ${room.script?.game_config.theme ?? '无剧本'}`,
+  )
+  room.dispose()
+}
+
+console.log('\n=== 14a. TLS 参数解析（命令行 / 环境变量 / 都没有） ===')
 
   const none = parseTlsArgs([], {})
   check('不传任何证书参数 = 纯 http（默认行为与以前完全一致）', !tlsRequested(none) && !none.pfx && !none.cert && !none.key)

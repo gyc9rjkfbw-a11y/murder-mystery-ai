@@ -54,6 +54,8 @@ export interface RoomOptions {
   code: string
   playerCount: number
   theme: string
+  /** 房主导入的自定义剧本；存在时跳过服务器本地生成。 */
+  script?: ScriptPackage | null
   /** 打一行中文日志用的回调（已带房间号前缀） */
   logger: (line: string) => void
   /**

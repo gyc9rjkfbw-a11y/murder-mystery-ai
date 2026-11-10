@@ -26,7 +26,7 @@ import {
 } from '@/services/net/protocol'
 import { VoiceRoom } from '@/services/net/voice'
 import { playerId } from '@/services/profile'
-import type { ClueItem } from '@/types/script'
+import type { ClueItem, ScriptPackage } from '@/types/script'
 import { useGameStore } from '@/stores/game'
 import { useSettingsStore } from '@/stores/settings'
 
@@ -340,7 +340,7 @@ export const useNetStore = defineStore('net', () => {
   }
 
   /** 建房并成为房主 */
-  function createRoom(name: string, count: number, themeName: string) {
+  function createRoom(name: string, count: number, themeName: string, script?: ScriptPackage) {
     myName.value = name || '我'
     active.value = true
     game.setOnline(true)
@@ -352,6 +352,7 @@ export const useNetStore = defineStore('net', () => {
       theme: themeName,
       proto: PROTOCOL_VERSION,
       ...identity(),
+      ...(script ? { script } : {}),
     }
     const c = ensureClient()
     c.connect()
