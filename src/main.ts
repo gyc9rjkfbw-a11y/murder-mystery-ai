@@ -12,6 +12,7 @@ import './styles/home.css'
 import './styles/lobby.css'
 import './styles/talk.css'
 import './styles/motion.css'
+import './styles/reader-acts.css'
 
 const app = createApp(App)
 app.use(createPinia())

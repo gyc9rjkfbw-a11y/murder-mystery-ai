@@ -6,6 +6,7 @@ import CountdownPill from '@/components/CountdownPill.vue'
 import PhaseStepper from '@/components/PhaseStepper.vue'
 import { useToast } from '@/composables/useToast'
 import { readingTimeText } from '@/services/rules'
+import { buildStoryActs } from '@/services/storyActs'
 import { scriptLength } from '@/services/templates/assemble'
 import { useGameStore } from '@/stores/game'
 
@@ -20,6 +21,8 @@ const isSelf = computed(() => role.value?.name === game.selfRole?.name)
 /** 只看时间线：6 人局长剧本容易读累，这个开关能把无关描写折叠掉 */
 const timelineOnly = ref(false)
 const flashId = ref('')
+const activeAct = ref(0)
+const visitedActs = ref<number[]>([0])
 
 /**
  * 时间点识别
@@ -74,10 +77,28 @@ const paragraphs = computed(() => {
       rule: /^其[一二三四五]/.test(line),
       times: extractTimes(line),
     }))
+    .filter((paragraph) => !/^【.+】$/.test(paragraph.line))
+})
+
+const acts = computed(() => buildStoryActs(role.value?.full_script ?? ''))
+const currentAct = computed(() => acts.value[activeAct.value] ?? acts.value[0])
+const currentActParagraphs = computed(() => {
+  if (!currentAct.value) return []
+  const byIndex = new Map(paragraphs.value.map((paragraph) => [paragraph.index, paragraph]))
+  return currentAct.value.paragraphs
+    .map((paragraph) => byIndex.get(paragraph.sourceIndex))
+    .filter((paragraph): paragraph is NonNullable<typeof paragraph> => Boolean(paragraph))
 })
 
 const visibleParagraphs = computed(() =>
-  timelineOnly.value ? paragraphs.value.filter((p) => p.times.length > 0) : paragraphs.value,
+  timelineOnly.value ? paragraphs.value.filter((p) => p.times.length > 0) : currentActParagraphs.value,
+)
+
+const visitedCount = computed(
+  () => visitedActs.value.filter((index) => index >= 0 && index < acts.value.length).length,
+)
+const actProgress = computed(() =>
+  acts.value.length > 0 ? Math.round((visitedCount.value / acts.value.length) * 100) : 0,
 )
 
 /** 时间线导航：把插在剧本里的时间点抽成快捷跳转项 */
@@ -113,6 +134,8 @@ const allRead = computed(() => game.allRead)
 onMounted(() => {
   if (!game.state.script) router.replace('/')
   if (game.state.phase === 'dealing' || game.state.phase === 'room') game.setPhase('reading')
+  activeAct.value = 0
+  visitedActs.value = [0]
 })
 
 function scrollTo(id: string) {
@@ -127,8 +150,36 @@ function scrollTo(id: string) {
 
 function jumpToParagraph(index: number) {
   if (timelineOnly.value) timelineOnly.value = false
-  // 等「只看时间线」的过滤结果渲染完成，再滚动
+  const targetAct = acts.value.findIndex((act) =>
+    act.paragraphs.some((paragraph) => paragraph.sourceIndex === index),
+  )
+  if (targetAct >= 0) openAct(targetAct, false)
   nextTick(() => scrollTo(`para-${index}`))
+}
+
+function openAct(index: number, moveToTop = true) {
+  const next = Math.max(0, Math.min(acts.value.length - 1, index))
+  activeAct.value = next
+  timelineOnly.value = false
+  if (!visitedActs.value.includes(next)) visitedActs.value.push(next)
+  if (!moveToTop) return
+  nextTick(() => {
+    const target = document.getElementById('sec-script')
+    if (!target) return
+    window.scrollTo({ top: Math.max(0, target.offsetTop - 76), behavior: 'smooth' })
+  })
+}
+
+function previousAct() {
+  if (activeAct.value > 0) openAct(activeAct.value - 1)
+}
+
+function nextAct() {
+  if (activeAct.value < acts.value.length - 1) {
+    openAct(activeAct.value + 1)
+    return
+  }
+  confirmRead()
 }
 
 function confirmRead() {
@@ -150,6 +201,8 @@ function switchRole(index: number) {
   }
   game.viewRole(index)
   timelineOnly.value = false
+  activeAct.value = 0
+  visitedActs.value = [0]
 }
 </script>
 
@@ -203,7 +256,11 @@ function switchRole(index: number) {
           <div class="small bold">本局阅读时长 {{ readingTimeText(game.rule.readingSeconds) }}</div>
           <div class="tiny muted">
             你的剧本 {{ wordCount }} 字（{{ game.state.seats.length }} 人局标准
-            {{ game.rule.scriptMin }}-{{ game.rule.scriptMax }} 字），关键时间点已为你标出
+            {{ game.rule.scriptMin }}-{{ game.rule.scriptMax }} 字）· 已浏览
+            {{ visitedCount }}/{{ acts.length }} 幕
+          </div>
+          <div class="act-progress" :aria-label="`阅读进度 ${actProgress}%`">
+            <span :style="{ width: `${actProgress}%` }" />
           </div>
         </div>
         <button
@@ -283,16 +340,68 @@ function switchRole(index: number) {
     </section>
 
     <article v-if="role" id="sec-script" class="card" :class="{ flash: flashId === 'sec-script' }">
-      <h3 class="card__title">你的剧本</h3>
-      <div class="script-body">
-        <p
-          v-for="p in visibleParagraphs"
-          :id="`para-${p.index}`"
-          :key="p.index"
-          :class="{ gold: p.rule, flash: flashId === `para-${p.index}` }"
-          v-html="highlight(p.line)"
-        />
-        <p v-if="visibleParagraphs.length === 0" class="muted">你的剧本里没有明确的时间点</p>
+      <div class="act-reader__head">
+        <div class="act-reader__heading">
+          <div class="act-reader__kicker">
+            {{ timelineOnly ? '时间线速览' : `第 ${activeAct + 1} 幕 / 共 ${acts.length} 幕` }}
+          </div>
+          <h3 class="act-reader__title">
+            {{ timelineOnly ? '关键时间点' : currentAct?.title ?? '你的剧本' }}
+          </h3>
+          <p class="act-reader__subtitle">
+            {{
+              timelineOnly
+                ? '只保留剧本里带有时间、钟点或案发节点的段落'
+                : currentAct?.subtitle
+            }}
+          </p>
+        </div>
+        <span class="tag tag--gold">
+          {{ timelineOnly ? `${timeIndex.length} 个节点` : `${currentAct?.charCount ?? 0} 字` }}
+        </span>
+      </div>
+
+      <nav v-if="!timelineOnly" class="act-tabs" role="tablist" aria-label="剧本幕次">
+        <button
+          v-for="(act, index) in acts"
+          :key="act.id + index"
+          class="act-tab"
+          :class="{ 'act-tab--on': index === activeAct }"
+          role="tab"
+          :aria-selected="index === activeAct"
+          @click="openAct(index)"
+        >
+          <span>{{ act.title.split(' · ')[0] }}</span>
+          <small>{{ act.title.split(' · ')[1] }}</small>
+          <i v-if="visitedActs.includes(index)" aria-hidden="true">✓</i>
+        </button>
+      </nav>
+      <div v-else class="timeline-notice">
+        <span class="tag">全剧本</span>
+        共找到 {{ timeIndex.length }} 个关键时间点，点击顶部时间标签可直接定位。
+      </div>
+
+      <Transition name="act-swap" mode="out-in">
+        <div :key="timelineOnly ? 'timeline' : currentAct?.id ?? 'empty'" class="script-body act-panel">
+          <p
+            v-for="p in visibleParagraphs"
+            :id="`para-${p.index}`"
+            :key="p.index"
+            :class="{ gold: p.rule, flash: flashId === `para-${p.index}` }"
+            v-html="highlight(p.line)"
+          />
+          <p v-if="visibleParagraphs.length === 0" class="muted">
+            {{ timelineOnly ? '你的剧本里没有明确的时间点' : '这一幕没有正文' }}
+          </p>
+        </div>
+      </Transition>
+
+      <div v-if="!timelineOnly" class="act-controls">
+        <button class="mini-btn" :disabled="activeAct === 0" @click="previousAct">‹ 上一幕</button>
+        <span>{{ activeAct + 1 }} / {{ acts.length }}</span>
+        <button class="mini-btn mini-btn--gold" @click="nextAct">
+          {{ activeAct === acts.length - 1 ? '读完本幕' : '下一幕 ›' }}
+        </button>
       </div>
     </article>
 
@@ -335,9 +444,22 @@ function switchRole(index: number) {
           已确认读完
           <template v-if="allRead"> · 全部玩家就绪</template>
         </template>
-        <template v-else>读完再点确认，别漏掉自己的秘密</template>
+        <template v-else>
+          <template v-if="timelineOnly">时间线速览中 · 关闭后继续分幕阅读</template>
+          <template v-else>
+            已浏览 {{ visitedCount }}/{{ acts.length }} 幕
+            <template v-if="activeAct < acts.length - 1"> · 读完这一幕再继续</template>
+          </template>
+        </template>
       </div>
-      <button v-if="!readDone" class="btn btn--primary btn--sm" @click="confirmRead">
+      <button
+        v-if="!readDone && !timelineOnly && activeAct < acts.length - 1"
+        class="btn btn--primary btn--sm"
+        @click="nextAct"
+      >
+        进入第 {{ activeAct + 2 }} 幕
+      </button>
+      <button v-else-if="!readDone" class="btn btn--primary btn--sm" @click="confirmRead">
         我已读完
       </button>
       <button v-else class="btn btn--primary btn--sm" @click="gotoStatement">
