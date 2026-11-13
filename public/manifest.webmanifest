@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "迷案 · AI 剧本杀",
-  "short_name": "迷案",
-  "description": "AI 剧本杀：单人试玩或开房和朋友一起玩，全屏运行、免安装 App 商店。",
+  "name": "谜案剧本杀",
+  "short_name": "谜案剧本杀",
+  "description": "谜案剧本杀：单人试玩或开房和朋友一起玩，全屏运行、免安装 App 商店。",
   "lang": "zh-CN",
   "dir": "ltr",
   "start_url": "/",

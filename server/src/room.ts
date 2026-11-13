@@ -8,19 +8,21 @@
  *      任何下发都必须走 `censorSeat()`（见 censor.ts）。**不允许**
  *      直接 `JSON.stringify(room)`。
  *   3. **只复用前端的既有规则**：轮次数 / 搜证次数 / 时长 / 提前结算阈值全部
- *      来自 `@/services/rules` 的 `pacingFor`，不在这里另写常量
+ *      来自 `@/services/rules` 与 `@/services/difficulty`（`pacingForDifficulty`：
+ *      人数档 + 本局难度），不在这里另写常量
  *      （唯一的例外是「个人整理 300 秒」，与前端 `ORGANIZE_SECONDS` 一致）。
  */
 
 import { randomUUID } from 'node:crypto'
+import { accelerateText, roundTheme, type PacingRule } from '@/services/rules'
 import {
-  accelerateText,
-  pacingFor,
-  roundTheme,
-} from '@/services/rules'
+  difficultyFor,
+  normalizeDifficulty,
+  pacingForDifficulty,
+} from '@/services/difficulty'
 import { makeBotStatement, makeBotVoteTarget } from '@/services/bots'
 import { AVATARS, makeRoomCode, phaseMeta, type GamePhase, type RoundSummary, type SettlementRow, type Statement, type VoteRecord } from '@/types/game'
-import type { ClueItem, Role, ScriptPackage } from '@/types/script'
+import type { ClueItem, Difficulty, Role, ScriptPackage } from '@/types/script'
 import {
   CHAT_HISTORY,
   CHAT_MAX_LEN,
@@ -43,6 +45,9 @@ const ORGANIZE_SECONDS = 300
 
 /** 意向投票阶段时长（秒）；与前端一致 */
 const POLL_SECONDS = 60
+
+/** 阅读超时后若还有人没读完，每次续时的分钟数 */
+const READ_GRACE_MINUTES = 5
 
 /** 断线座位轮到发言后，自动跳过的等待时长（毫秒） */
 const OFFLINE_SKIP_MS = 20_000
@@ -158,6 +163,10 @@ export class Room {
   readonly code: string
   readonly playerCount: number
   readonly theme: string
+  /** 本局难度（建房时定，整局不变；重开一局也沿用） */
+  readonly difficulty: Difficulty
+  /** 本局难度下的真实节奏（人数 + 难度唯一来源，别处不要再算） */
+  readonly pacing: PacingRule
   hostSeatId = ''
   seats: RoomSeat[] = []
 
@@ -236,6 +245,10 @@ export class Room {
   private customScript: ScriptPackage | null
   /** 复盘结算回调（由 app.ts 注入，用来写玩家档案） */
   private onGameSettled?: (rows: import('./types').SettledPlayerRow[]) => void
+  /** 房间已解散：此后不再广播、不再处理任何命令 */
+  private closed = false
+  /** 解散回调（由 app.ts 注入，用来把房号从房间表里删掉） */
+  private onDissolve?: (code: string) => void
 
   constructor(options: RoomOptions) {
     this.code = options.code
@@ -243,12 +256,17 @@ export class Room {
     this.theme = options.theme
     this.logger = options.logger
     this.onGameSettled = options.onGameSettled
+    this.onDissolve = options.onDissolve
     this.phaseScale = options.phaseScale && options.phaseScale > 0 ? options.phaseScale : 1
     this.nowFn = options.now ?? Date.now
     this.customScript = options.script ?? null
-    const pacing = pacingFor(options.playerCount)
-    this.maxRounds = pacing.maxRounds
-    this.searchRounds = pacing.searchRounds
+    // 自定义剧本可以自带难度；没有就用房主选的，脏值回落到标准
+    this.difficulty = normalizeDifficulty(
+      options.difficulty ?? options.script?.game_config.difficulty,
+    )
+    this.pacing = pacingForDifficulty(options.playerCount, this.difficulty)
+    this.maxRounds = this.pacing.maxRounds
+    this.searchRounds = this.pacing.searchRounds
   }
 
   /** 当前时间（默认 Date.now；测试可以注入假时钟） */
@@ -438,10 +456,17 @@ export class Room {
     }
   }
 
-  /** 主动离开：未开局直接移除座位；已开局只标记掉线（不破坏对局） */
+  /**
+   * 主动离开。
+   * ------------------------------------------------------------------
+   * · **对局进行中**（复盘之前）：只标记掉线，座位与角色都留着，可以 token 重连；
+   * · **复盘之后**：这一局已经结束，「离开房间」就是真的走人——座位删掉、
+   *   房主顺位转交；最后一位真人也走了就顺手把房间关掉，
+   *   免得给别人留一个谁也无法开局的空房（空房间的 10 分钟回收是兜底，不是常态）。
+   */
   leaveSeat(seat: RoomSeat): void {
     this.lastActivity = Date.now()
-    if (this.started) {
+    if (this.started && this.phase !== 'reveal') {
       this.markDisconnected(seat)
       this.toastAll(`${seat.name} 离开了房间`, 'warn')
       this.broadcastView()
@@ -460,6 +485,11 @@ export class Room {
     }
     this.log(`${seat.name} 离开了房间（剩 ${this.humanCount()} 人）`)
     this.toastAll(`${seat.name} 离开了房间`, 'warn')
+    if (this.humanCount() === 0) {
+      // 最后一个真人也走了：房间没有存在的意义，直接关灯（连接会在 app 层释放）
+      this.dissolve()
+      return
+    }
     this.broadcastView()
   }
 
@@ -510,6 +540,7 @@ export class Room {
    *   序列化下发的地方。
    */
   broadcastView(): void {
+    if (this.closed) return
     this.version += 1
     for (const seat of this.seats) {
       if (seat.isBot || !seat.connected || !seat.socket) continue
@@ -519,6 +550,7 @@ export class Room {
 
   /** 只给一个座位补发当前视图（重连时用） */
   sendViewTo(seat: RoomSeat): void {
+    if (this.closed) return
     this.version += 1
     if (seat.isBot || !seat.socket) return
     this.send(seat, { t: 'view', view: censorSeat(this, seat.seatId) })
@@ -542,7 +574,7 @@ export class Room {
   }
 
   private phaseSeconds(phase: GamePhase): number {
-    const pacing = pacingFor(this.playerCount)
+    const pacing = this.pacing
     let seconds: number
     switch (phase) {
       case 'reading':
@@ -581,13 +613,41 @@ export class Room {
       `阶段推进 → ${phaseText(phase)}${roundTag}` +
         (seconds > 0 ? `，${seconds} 秒后自动推进` : ''),
     )
-    if (seconds > 0) {
-      this.phaseTimer = this.later(seconds * 1000, () => {
-        this.log(`阶段超时（${phaseText(this.phase)}），服务器自动推进`)
-        this.advancePhase()
+    if (seconds > 0) this.armPhaseTimer(seconds)
+  }
+
+  /** 挂一次阶段倒计时（阅读阶段「还没读完」时会用它续时） */
+  private armPhaseTimer(seconds: number): void {
+    this.clearPhaseTimer()
+    this.phaseTimer = this.later(seconds * 1000, () => {
+      // 阅读阶段是「人等时间」而不是「时间等人」：时间到了还有人没读完，
+      // 绝不能把人硬拖进陈述（那样没读完的人等于被剥夺了剧本）。
+      // 做法是再给 5 分钟，反复续时，直到所有人都点了「我已读完」。
+      if (this.phase === 'reading' && !this.allReadConfirmed()) {
+        const waiting = this.waitingReaders().join('、')
+        this.log(`阅读时间到，${waiting} 还没读完，再延长 ${READ_GRACE_MINUTES} 分钟`)
+        this.toastAll(`${waiting} 还没读完，阅读时间再延长 ${READ_GRACE_MINUTES} 分钟`, 'info')
+        this.phaseEndsAt = Date.now() + READ_GRACE_MINUTES * 60 * 1000
+        this.armPhaseTimer(READ_GRACE_MINUTES * 60)
         this.broadcastView()
-      })
-    }
+        return
+      }
+      this.log(`阶段超时（${phaseText(this.phase)}），服务器自动推进`)
+      this.advancePhase()
+      this.broadcastView()
+    })
+  }
+
+  /** 还没点「我已读完」的真人（AI 开局即视为读完，掉线的人不挡整桌） */
+  private waitingReaders(): string[] {
+    return this.seats
+      .filter((s) => !s.isBot && s.connected && !s.readConfirmed)
+      .map((s) => s.name)
+  }
+
+  /** 所有人（在座真人 + AI）都读完了没有 */
+  private allReadConfirmed(): boolean {
+    return this.seats.every((s) => s.isBot || !s.connected || s.readConfirmed)
   }
 
   /** 推进到下一阶段（房主手动 / 超时自动都走这里） */
@@ -645,7 +705,10 @@ export class Room {
     this.dealing = true
     this.fillBots()
     const bots = this.seats.filter((s) => s.isBot).length
-    this.log(`开始游戏：${this.playerCount} 人（真人 ${this.humanCount()}，AI 自动补位 ${bots} 个）`)
+    this.log(
+      `开始游戏：${this.playerCount} 人，难度 ${difficultyFor(this.difficulty).label}` +
+        `（真人 ${this.humanCount()}，AI 自动补位 ${bots} 个）`,
+    )
     this.setPhase('dealing')
     this.broadcastView()
 
@@ -658,7 +721,7 @@ export class Room {
             errors: checked.errors,
           }
         })()
-      : await buildScriptPackage(this.playerCount, this.theme)
+      : await buildScriptPackage(this.playerCount, this.theme, this.difficulty)
     this.dealing = false
     if (!built.ok || !built.pkg) {
       this.log(`剧本生成失败：${built.errors.join('；')}`)
@@ -673,16 +736,20 @@ export class Room {
     this.started = true
     this.round = 1
     for (const s of this.seats) {
+      // 「已准备」是等待厅的概念，开局就没意义了；这里必须清掉，
+      // 否则它会被当成「已读完剧本」，让阅读闸门形同虚设（AI 除外，开局即读完）。
+      s.ready = false
+      s.readConfirmed = false
       if (s.isBot) {
         s.ready = true
         s.readConfirmed = true
       }
     }
     this.setPhase('reading')
-    const pacing = pacingFor(this.playerCount)
+    const pacing = this.pacing
     this.systemSay(
       '剧本已下发',
-      `本局 ${this.playerCount} 人，共 ${this.maxRounds} 轮` +
+      `本局 ${this.playerCount} 人，难度「${difficultyFor(this.difficulty).label}」，共 ${this.maxRounds} 轮` +
         (this.searchRounds > 0
           ? `，每轮每人可搜证 ${pacing.searchPerRound} 次。`
           : '，线索由系统按轮次发放。') +
@@ -690,6 +757,119 @@ export class Room {
     )
     this.toastAll('剧本已下发，请开始阅读', 'good')
     this.broadcastView()
+  }
+
+  /**
+   * 复盘后再来一局：把房间退回等待厅，**保留房号、座位和所有真人连接**。
+   * ------------------------------------------------------------------
+   * 以前只能靠前端 `resetAll()` 自己清状态，服务端还停在复盘阶段，
+   * 于是客户端被阶段跟随甩回等待厅、又一直显示「已开局，正在前往阅读页…」——
+   * 看起来就是永远转圈。房间支持重开之后，同房间可以连开多局。
+   */
+  restart(seat: RoomSeat, keep = true): void {
+    if (seat.seatId !== this.hostSeatId) {
+      this.fail(seat, '只有房主可以发起再来一局', 'not-host')
+      return
+    }
+    if (!this.started) {
+      this.fail(seat, '这一局还没开始，直接开局就行', 'not-started')
+      return
+    }
+    // 「解散」和「保留」共用同一套权限校验：两种都要房主、都要在复盘后
+    if (!keep) {
+      this.dissolve()
+      return
+    }
+
+    // 停掉所有计时器，否则旧阶段的超时会把人推回上一局
+    this.clearPhaseTimer()
+    this.clearTurnTimer()
+    this.clearTimer(this.hintTimer)
+    this.hintTimer = null
+
+    // 逐局状态清空（房号 / 座位 / 公屏 / 自定义剧本保留）
+    this.started = false
+    this.dealing = false
+    this.round = 1
+    this.phaseEndsAt = 0
+    this.script = null
+    this.murdererSeatId = null
+    this.releasedTiers = []
+    this.clues = []
+    this.statements = []
+    this.turnSeatId = null
+    this.turnOrder = []
+    this.spokenSeatIds.clear()
+    this.strawPoll = []
+    this.strawTally = []
+    this.accel = { suggested: false, reason: '' }
+    this.roundSummary = null
+    this.roundSummaries = []
+    this.votes = []
+    this.reveal = null
+    this.hints = []
+    this.privilegeAt = 0
+    this.searchLeft.clear()
+    this.statsRecorded = false
+
+    // 座位：角色清掉、准备状态复位（AI 一直准备着，真人需要重新准备）
+    let botIndex = this.humanCount()
+    for (const s of this.seats) {
+      s.roleName = null
+      s.readConfirmed = false
+      if (s.isBot) {
+        s.ready = true
+        botIndex += 1
+        // 把「AI·角色名」改回不带本局角色的名字，免得大厅看起来像上一局
+        s.name = `AI 玩家${botIndex}`
+      } else {
+        s.ready = false
+      }
+    }
+
+    this.setPhase('lobby')
+    this.log('房主发起再来一局：房间已退回等待厅')
+    this.toastAll('房主发起了再来一局，房间已退回等待厅', 'good')
+    this.broadcastView()
+  }
+
+  /**
+   * 房主解散旧房间（复盘页的另一个选项）。
+   * ------------------------------------------------------------------
+   * 房间一旦解散就**不可恢复**：房号作废、所有人被请回首页、定时器全停。
+   * 客户端靠 `closed` 帧自己清空本地局，所以这里必须先把帧发出去再关连接
+   * （ws 的 close 是排队操作，先前 send 的数据会先落盘）。
+   */
+  private dissolve(): void {
+    if (this.closed) return
+    this.closed = true
+
+    this.clearPhaseTimer()
+    this.clearTurnTimer()
+    this.clearTimer(this.hintTimer)
+    this.hintTimer = null
+    this.dealing = false
+
+    const text = '房主解散了房间，这一局到此结束'
+    for (const seat of this.seats) {
+      if (seat.isBot || !seat.socket) continue
+      this.send(seat, { t: 'closed', reason: 'dissolved', text })
+      try {
+        seat.socket.close(4002, 'room-dissolved')
+      } catch {
+        /* 已经断了的连接，忽略 */
+      }
+      seat.socket = null
+      seat.connected = false
+    }
+    this.voiceMembers.clear()
+    this.log(`房主解散了房间 ${this.code}（${this.humanCount()} 人离场）`)
+    this.onDissolve?.(this.code)
+  }
+
+  /** 房间是否已经解散（app.ts 用它决定还能不能把新连接塞进来） */
+  isClosed(): boolean {
+    return this.closed
   }
 
   private applyScript(pkg: ScriptPackage): void {
@@ -772,7 +952,7 @@ export class Room {
    * ------------------------------------------------------------------ */
 
   private beginRound(n: number): void {
-    const pacing = pacingFor(this.playerCount)
+    const pacing = this.pacing
     this.round = Math.min(this.maxRounds, Math.max(1, n))
     this.spokenSeatIds.clear()
     this.strawPoll = []
@@ -911,7 +1091,7 @@ export class Room {
    * ------------------------------------------------------------------ */
 
   private enterSearch(): void {
-    const pacing = pacingFor(this.playerCount)
+    const pacing = this.pacing
     for (const s of this.seats) this.searchLeft.set(s.seatId, pacing.searchPerRound)
     this.setPhase('search')
     this.systemSay(
@@ -924,7 +1104,7 @@ export class Room {
 
   private scheduleBotSearch(): void {
     const bots = this.seats.filter((s) => s.isBot)
-    const pacing = pacingFor(this.playerCount)
+    const pacing = this.pacing
     bots.forEach((bot, i) => {
       for (let attempt = 0; attempt < pacing.searchPerRound; attempt += 1) {
         const delay = 900 + i * 350 + attempt * 1400
@@ -967,7 +1147,7 @@ export class Room {
       this.fail(seat, `没有这个搜证地点：${location}`, 'no-location')
       return
     }
-    const pacing = pacingFor(this.playerCount)
+    const pacing = this.pacing
     const left = this.searchLeftFor(seat.seatId)
     if (left <= 0) {
       this.fail(seat, `本轮搜证次数已用完（每人每轮 ${pacing.searchPerRound} 次）`, 'search-limit')
@@ -1078,7 +1258,7 @@ export class Room {
     const tally: Record<string, number> = {}
     for (const row of this.strawTally) tally[row.roleName] = row.count
     const { top, votes } = topOf(tally)
-    const pacing = pacingFor(this.playerCount)
+    const pacing = this.pacing
     // 提前结算条件一：只在**倒数第二轮**达到票数阈值
     const isPenultimate = this.round === this.maxRounds - 1
     let accel: { suggested: boolean; reason: string } = { suggested: false, reason: '' }
@@ -1252,6 +1432,10 @@ export class Room {
         label: '本局人数',
         value: `${this.playerCount} 人（真人在线 ${this.humanCount()}，AI 补位 ${this.seats.filter((s) => s.isBot).length}）`,
       },
+      {
+        label: '难度',
+        value: `${difficultyFor(this.difficulty).label} — ${difficultyFor(this.difficulty).tagline}`,
+      },
       { label: '实际轮次', value: `第 ${this.round} 轮 / 共 ${this.maxRounds} 轮` },
       {
         label: '线索发放',
@@ -1340,7 +1524,7 @@ export class Room {
 
   /** 防冷场：6 人局半场无人发言时给一次 AI 侦探提示 */
   private scheduleIdleHint(): void {
-    const pacing = pacingFor(this.playerCount)
+    const pacing = this.pacing
     const seconds = pacing.idleHintSeconds
     if (seconds <= 0) return
     const round = this.round
@@ -1481,13 +1665,28 @@ export class Room {
 
   /** 处理一条客户端消息（create / join / rejoin / ping 由 app.ts 处理） */
   handle(seat: RoomSeat, msg: ClientMsg): void {
+    if (this.closed) return
     this.lastActivity = Date.now()
     switch (msg.t) {
       case 'ready':
         seat.ready = msg.ready === true
         if (this.phase === 'reading') seat.readConfirmed = seat.ready
-        this.log(`${seat.name} ${seat.ready ? '已就绪' : '取消就绪'}`)
-        this.toastAll(`${seat.name} ${seat.ready ? '已就绪' : '取消就绪'}`, 'info')
+        if (this.phase === 'reading') {
+          // 阅读阶段这条消息的含义是「我读完了」，不能沿用大厅的「已就绪」文案
+          this.log(`${seat.name} ${seat.readConfirmed ? '已读完剧本' : '撤回了「已读完」'}`)
+          const left = this.waitingReaders()
+          this.toastAll(
+            seat.readConfirmed
+              ? left.length > 0
+                ? `${seat.name} 读完剧本，还差 ${left.join('、')}`
+                : `${seat.name} 读完剧本，全部玩家已读完`
+              : `${seat.name} 撤回了「已读完」`,
+            seat.readConfirmed && left.length === 0 ? 'good' : 'info',
+          )
+        } else {
+          this.log(`${seat.name} ${seat.ready ? '已就绪' : '取消就绪'}`)
+          this.toastAll(`${seat.name} ${seat.ready ? '已就绪' : '取消就绪'}`, 'info')
+        }
         this.broadcastView()
         return
 
@@ -1495,9 +1694,20 @@ export class Room {
         void this.start(seat)
         return
 
+      case 'rematch':
+        this.restart(seat, msg.keep !== false)
+        return
+
       case 'advance':
         if (seat.seatId !== this.hostSeatId) {
           this.fail(seat, '只有房主可以推进阶段', 'not-host')
+          return
+        }
+        // 阅读 → 陈述的门槛：所有人都点了「我已读完」才放行。
+        // 房主也不能例外——否则没读完的人会被直接拖进陈述，等于没拿到剧本。
+        if (this.phase === 'reading' && !this.allReadConfirmed()) {
+          const waiting = this.waitingReaders().join('、')
+          this.fail(seat, `还有 ${waiting} 没读完，等所有人读完再开始陈述`, 'still-reading')
           return
         }
         this.log(`房主手动推进阶段：${phaseText(this.phase)}`)

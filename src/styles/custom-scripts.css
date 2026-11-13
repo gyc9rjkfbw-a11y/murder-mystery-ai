@@ -90,10 +90,16 @@
 
 .custom-ai__settings {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   justify-content: space-between;
   gap: 10px;
   margin: -2px 0 13px;
+}
+
+/* AI 设置按钮靠右，人数与难度各占一组 chip */
+.custom-ai__settings > .mini-btn {
+  margin-left: auto;
 }
 
 .custom-ai__label {

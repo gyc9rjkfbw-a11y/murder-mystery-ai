@@ -26,7 +26,7 @@ import {
 } from '@/services/net/protocol'
 import { VoiceRoom } from '@/services/net/voice'
 import { playerId } from '@/services/profile'
-import type { ClueItem, ScriptPackage } from '@/types/script'
+import type { ClueItem, Difficulty, ScriptPackage } from '@/types/script'
 import { useGameStore } from '@/stores/game'
 import { useSettingsStore } from '@/stores/settings'
 
@@ -135,6 +135,7 @@ export const useNetStore = defineStore('net', () => {
   const reconnecting = computed(() => active.value && status.value !== 'open')
   const playerCount = computed(() => view.value?.playerCount ?? 0)
   const theme = computed(() => view.value?.theme ?? '')
+  const difficulty = computed<Difficulty>(() => view.value?.difficulty ?? 'normal')
   const started = computed(() => view.value?.started === true)
   const myReady = computed(() => mySeatReady())
   const allReady = computed(() => {
@@ -277,6 +278,12 @@ export const useNetStore = defineStore('net', () => {
       case 'voice-signal':
         void voiceRoom.value?.handleSignal(msg.fromSeatId, msg.data)
         break
+      case 'closed':
+        // 房主解散了房间：房号已经作废，重连也回不去，只能清空本地局回首页
+        lastToast.value = msg.text
+        toastKind.value = 'warn'
+        leaveRoom()
+        break
     }
   }
 
@@ -339,8 +346,14 @@ export const useNetStore = defineStore('net', () => {
     return avatar ? { playerId: id, avatar } : { playerId: id }
   }
 
-  /** 建房并成为房主 */
-  function createRoom(name: string, count: number, themeName: string, script?: ScriptPackage) {
+  /** 建房并成为房主（`difficulty` 不传则由服务器按「标准」处理） */
+  function createRoom(
+    name: string,
+    count: number,
+    themeName: string,
+    script?: ScriptPackage,
+    difficulty?: Difficulty,
+  ) {
     myName.value = name || '我'
     active.value = true
     game.setOnline(true)
@@ -350,6 +363,7 @@ export const useNetStore = defineStore('net', () => {
       name: myName.value,
       playerCount: count,
       theme: themeName,
+      difficulty,
       proto: PROTOCOL_VERSION,
       ...identity(),
       ...(script ? { script } : {}),
@@ -535,6 +549,19 @@ export const useNetStore = defineStore('net', () => {
     send({ t: 'start' })
   }
 
+  /**
+   * 房主：本局复盘后结束这一桌。
+   * - `keep = true`（默认）：让**服务器**把房间退回等待厅（座位、房号、
+   *   真人连接都保留），可以直接开下一局；
+   * - `keep = false`：解散旧房间，服务器广播 `closed` 后全员回首页、房号作废。
+   *
+   * 不能只在前端 `resetAll()`——那样服务端还停在复盘阶段，客户端会被
+   * 阶段跟随甩回等待厅，并一直显示「已开局，正在前往阅读页…」。
+   */
+  function rematch(keep = true) {
+    send({ t: 'rematch', keep })
+  }
+
   function addBot() {
     send({ t: 'add-bot' })
   }
@@ -614,6 +641,7 @@ export const useNetStore = defineStore('net', () => {
     reconnecting,
     playerCount,
     theme,
+    difficulty,
     started,
     myReady,
     allReady,
@@ -642,6 +670,7 @@ export const useNetStore = defineStore('net', () => {
     leaveRoom,
     setReady,
     start,
+    rematch,
     addBot,
     copyCode,
     advance,

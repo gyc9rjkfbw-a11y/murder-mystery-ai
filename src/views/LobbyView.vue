@@ -13,16 +13,25 @@
  * 所有状态与方法都来自 `useNetStore`，本页不直接碰 WebSocket 与路由表。
  */
 import { computed, onBeforeUnmount, ref } from 'vue'
-import { onBeforeRouteLeave } from 'vue-router'
+import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import AppTopBar from '@/components/AppTopBar.vue'
 import { useToast } from '@/composables/useToast'
-import { pacingFor } from '@/services/rules'
+import { difficultyFor, pacingForDifficulty } from '@/services/difficulty'
 import type { SeatBrief } from '@/services/net/protocol'
 import { useNetStore } from '@/stores/net'
 import { AVATARS } from '@/types/game'
 
 const net = useNetStore()
 const toast = useToast()
+const router = useRouter()
+
+/**
+ * 复盘后从复盘页点「返回房间」的人会落在这里（非房主）：
+ * 这一局已经结束、房间还开着，给一条回复盘的路，别让人以为卡住了。
+ */
+function openReveal() {
+  router.push('/reveal')
+}
 
 /* ------------------------------------------------------------------ *
  * 连接状态：断线期间一律锁住会写服务器的操作
@@ -73,11 +82,14 @@ const paceText = computed(() => {
   const view = net.view
   if (!view) return '等待服务器下发配置…'
   if (!view.searchRounds) return `${view.maxRounds} 轮陈述 · 不设搜证环节，线索按轮次发放`
-  const perRound = pacingFor(net.playerCount).searchPerRound
+  const perRound = pacingForDifficulty(net.playerCount, net.difficulty).searchPerRound
   return perRound > 0
     ? `${view.maxRounds} 轮陈述 · 每轮搜证 ${perRound} 次`
     : `${view.maxRounds} 轮陈述 · 共 ${view.searchRounds} 轮搜证`
 })
+
+/** 本局难度（服务端权威，跟着 view 走） */
+const difficultyInfo = computed(() => difficultyFor(net.difficulty))
 
 /* ------------------------------------------------------------------ *
  * 邀请地址：从当前页面地址推导，绝不写死 IP
@@ -172,11 +184,40 @@ onBeforeRouteLeave(() => {
     <p v-if="net.lastToast" class="lobby-toast">{{ net.lastToast }}</p>
 
     <template v-if="net.inRoom">
-      <!-- ---------- 开局后：过渡态（跳转由 store 做） ---------- -->
+      <!-- ---------- 开局后：过渡态（跳转由 store 做）；复盘阶段换成「已结束」等待卡 ---------- -->
       <section v-if="net.started" class="card lobby-started">
-        <div class="spinner" aria-hidden="true" />
-        <p class="lobby-started__title">已开局</p>
-        <p class="lobby-started__hint muted small">剧本已下发，正在前往阅读页…</p>
+        <template v-if="net.phase === 'reveal'">
+          <p class="lobby-started__title">这一局已经结束</p>
+          <p class="lobby-started__hint muted small">
+            房号 <strong class="gold">{{ net.roomCode }}</strong> 还开着 ·
+            {{
+              net.isHost
+                ? '点「再开一局」把所有人带回等待厅。'
+                : '等房主开新一局，也可以先回复盘页看真相。'
+            }}
+          </p>
+          <div class="btn-row lobby-ended-actions">
+            <button class="btn btn--ghost btn--sm" type="button" @click="openReveal">
+              查看复盘
+            </button>
+            <button
+              v-if="net.isHost"
+              class="btn btn--primary btn--sm"
+              type="button"
+              @click="net.rematch(true)"
+            >
+              再开一局
+            </button>
+          </div>
+          <p class="tiny muted lobby-note" style="margin-top: 10px">
+            座位和角色都还在；开新一局会重新抽角色、重新下发剧本。
+          </p>
+        </template>
+        <template v-else>
+          <div class="spinner" aria-hidden="true" />
+          <p class="lobby-started__title">已开局</p>
+          <p class="lobby-started__hint muted small">剧本已下发，正在前往阅读页…</p>
+        </template>
       </section>
 
       <!-- ---------- 房号卡片 ---------- -->
@@ -352,6 +393,13 @@ onBeforeRouteLeave(() => {
         <div class="kv">
           <span class="kv__k">题材</span>
           <span class="kv__v">{{ net.theme || '—' }}</span>
+        </div>
+        <div class="kv">
+          <span class="kv__k">难度</span>
+          <span class="kv__v">
+            <span class="difficulty-chip">{{ difficultyInfo.emoji }} {{ difficultyInfo.label }}</span>
+            {{ difficultyInfo.tagline }}
+          </span>
         </div>
         <div class="kv">
           <span class="kv__k">节奏</span>

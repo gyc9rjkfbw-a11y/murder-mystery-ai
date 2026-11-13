@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import AppTopBar from '@/components/AppTopBar.vue'
 import InstallCard from '@/components/InstallCard.vue'
-import ProfileCard from '@/components/ProfileCard.vue'
 import SheetModal from '@/components/SheetModal.vue'
 import { useToast } from '@/composables/useToast'
 import { testConnection, type AiProvider } from '@/services/aiEngine'
@@ -14,6 +14,7 @@ import {
 import { SYSTEM_PROMPT } from '@/services/systemPrompt'
 import { useSettingsStore } from '@/stores/settings'
 
+const router = useRouter()
 const settings = useSettingsStore()
 const toast = useToast()
 const testing = ref(false)
@@ -93,12 +94,20 @@ onMounted(refreshHistoryCount)
 </script>
 
 <template>
-  <AppTopBar title="游戏设置" sub="偏好、档案与高级选项" show-back />
+  <AppTopBar title="游戏设置" sub="默认参数与高级选项" show-back />
 
   <main class="page settings-page">
-    <ProfileCard />
+    <!-- 档案在「我的」页：这里只留一个入口，避免两页内容雷同 -->
+    <button class="settings-me" @click="router.push('/me')">
+      <span class="settings-me__avatar" aria-hidden="true">{{ settings.state.avatar }}</span>
+      <span class="settings-me__copy">
+        <strong>{{ settings.state.playerName || '我的档案' }}</strong>
+        <small>头像 · 昵称 · 战绩 · 剧本偏好</small>
+      </span>
+      <i class="settings-me__arrow" aria-hidden="true">›</i>
+    </button>
 
-    <p class="settings-section-title">游戏偏好</p>
+    <p class="settings-section-title">对局与显示</p>
     <section class="settings-menu">
       <div class="settings-row">
         <div class="settings-row__copy">
@@ -296,7 +305,7 @@ onMounted(refreshHistoryCount)
     </details>
 
     <p class="tiny muted center settings-version">
-      迷案 · AI 剧本杀 v0.1.0<br />
+      谜案剧本杀 v0.1.0<br />
       Vue 3 + Vite + TypeScript
     </p>
   </main>

@@ -282,15 +282,50 @@
   text-align: left;
 }
 
+/*
+ * 随身任务默认只露 4 行（用 max-height 而不是 line-clamp：
+ * 被 line-clamp 的元素量不出 scrollHeight，就没法判断要不要给「展开全文」）。
+ */
 .discussion-role__task p {
-  display: -webkit-box;
+  max-height: calc(1.65em * 4);
   overflow: hidden;
   margin: 4px 0 0;
   color: var(--muted);
   font-size: 9.5px;
   line-height: 1.65;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
+  transition: max-height 0.26s ease;
+}
+
+.discussion-role__task.is-open p {
+  max-height: 64em;
+}
+
+.discussion-role__task-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 0 0;
+  border: 0;
+  background: none;
+  color: var(--gold-dim);
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+
+.discussion-role__task-toggle:hover {
+  color: var(--gold);
+}
+
+.discussion-role__task-caret {
+  display: inline-block;
+  transition: transform 0.22s ease;
+}
+
+.discussion-role__task.is-open .discussion-role__task-caret {
+  transform: rotate(180deg);
 }
 
 .discussion-center-column {
@@ -873,6 +908,12 @@
 
   .discussion-role__portrait span {
     font-size: 28px;
+  }
+
+  /* 头像组件用内联尺寸，窄屏必须显式压回 64px 的圆框内，否则会压住角色名 */
+  .discussion-role__portrait .role-avatar {
+    width: 60px !important;
+    height: 60px !important;
   }
 
   .discussion-role__name {

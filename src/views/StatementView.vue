@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import AppTopBar from '@/components/AppTopBar.vue'
 import CountdownPill from '@/components/CountdownPill.vue'
 import PhaseStepper from '@/components/PhaseStepper.vue'
+import RoleAvatar from '@/components/RoleAvatar.vue'
 import SheetModal from '@/components/SheetModal.vue'
 import { useToast } from '@/composables/useToast'
 import { useGameStore } from '@/stores/game'
@@ -107,14 +108,39 @@ const myTurn = computed(() => speaker.value?.isSelf === true && !game.selfHasSpo
 const allSpoken = computed(() => game.allSpoken)
 const isSearchRound = computed(() => game.state.round <= game.state.searchRounds)
 const isLastRound = computed(() => game.state.round >= game.state.maxRounds)
-const selfSeat = computed(() => game.selfSeat)
 const selfRole = computed(() => game.selfRole)
-const selfAvatar = computed(() => selfSeat.value?.avatar || '🎭')
 const discussionTitle = computed(() => game.state.script?.game_config.theme || '公开讨论')
 
 const selfObjective = computed(() => {
   if (selfRole.value?.is_murderer) return '隐藏真相，避免成为唯一最高票'
   return '找出真凶，并让证据链指向正确的人'
+})
+
+/**
+ * 「随身任务」有时候是三四百字的长文。侧栏直接铺开会把讨论区挤到屏幕外，
+ * 但一直截断又等于让人看不到自己的任务，所以默认折叠 4 行，
+ * 溢出时给一个「展开全文」，点开就是完整任务，再点收起。
+ */
+const taskText = computed(
+  () => selfRole.value?.surface_task ?? '先听别人怎么说，再决定亮出哪张牌。',
+)
+const taskExpanded = ref(false)
+const taskOverflow = ref(false)
+const taskBodyRef = ref<HTMLElement | null>(null)
+let taskObserver: ResizeObserver | null = null
+
+function measureTask() {
+  const el = taskBodyRef.value
+  if (!el) return
+  // 展开态下 max-height 已放开，量不出真实溢出，保留原结论即可
+  if (taskExpanded.value) return
+  taskOverflow.value = el.scrollHeight > el.clientHeight + 2
+}
+
+watch(taskText, async () => {
+  taskExpanded.value = false
+  await nextTick()
+  measureTask()
 })
 
 const currentSpeakerIdentity = computed(() => {
@@ -173,10 +199,21 @@ onMounted(() => {
   }
   if (game.state.phase !== 'statement') game.startStatement()
   handle = window.setInterval(tick, 2600)
+  void nextTick(() => {
+    measureTask()
+    if (typeof ResizeObserver !== 'undefined' && taskBodyRef.value) {
+      taskObserver = new ResizeObserver(() => measureTask())
+      taskObserver.observe(taskBodyRef.value)
+    }
+  })
+  // 等字体真正落位后再量一次，否则换行位置会算错
+  void document.fonts?.ready.then(() => measureTask())
 })
 
 onBeforeUnmount(() => {
   if (handle) window.clearInterval(handle)
+  taskObserver?.disconnect()
+  taskObserver = null
 })
 
 function tick() {
@@ -313,7 +350,11 @@ function saveInference() {
           <span>你的角色</span>
         </div>
         <div class="discussion-role__portrait">
-          <span>{{ selfAvatar }}</span>
+          <RoleAvatar
+            :role="selfRole"
+            :size="104"
+            :tone="selfRole?.is_murderer ? 'blood' : 'gold'"
+          />
         </div>
         <div class="discussion-role__name">{{ selfRole?.name ?? '等待角色分配' }}</div>
         <div class="discussion-role__camp" :class="selfRole?.is_murderer ? 'is-killer' : 'is-civil'">
@@ -329,9 +370,19 @@ function saveInference() {
             <strong>{{ selfObjective }}</strong>
           </div>
         </div>
-        <div class="discussion-role__task">
+        <div class="discussion-role__task" :class="{ 'is-open': taskExpanded }">
           <span>随身任务</span>
-          <p>{{ selfRole?.surface_task ?? '先听别人怎么说，再决定亮出哪张牌。' }}</p>
+          <p ref="taskBodyRef">{{ taskText }}</p>
+          <button
+            v-if="taskOverflow"
+            type="button"
+            class="discussion-role__task-toggle"
+            :aria-expanded="taskExpanded ? 'true' : 'false'"
+            @click="taskExpanded = !taskExpanded"
+          >
+            {{ taskExpanded ? '收起' : '展开全文' }}
+            <span class="discussion-role__task-caret" aria-hidden="true">▾</span>
+          </button>
         </div>
       </aside>
 

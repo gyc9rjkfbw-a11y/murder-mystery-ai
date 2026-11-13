@@ -221,3 +221,70 @@ html[data-motion='reduced'] .brand-mark--animated .brand-mark__seal-line {
     min-width: 0;
   }
 }
+
+/* ---------- 「我的」入口（档案都在 /me，这里只留一行指路） ---------- */
+.settings-me {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 13px;
+  border: 1px solid rgba(216, 169, 91, 0.2);
+  border-radius: 15px;
+  background:
+    linear-gradient(150deg, rgba(216, 169, 91, 0.1), transparent 60%),
+    rgba(255, 255, 255, 0.022);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+
+.settings-me:hover {
+  border-color: rgba(216, 169, 91, 0.38);
+  background:
+    linear-gradient(150deg, rgba(216, 169, 91, 0.16), transparent 60%),
+    rgba(255, 255, 255, 0.028);
+}
+
+.settings-me__avatar {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(216, 169, 91, 0.4);
+  border-radius: 50%;
+  background: rgba(216, 169, 91, 0.12);
+  font-size: 19px;
+  line-height: 1;
+}
+
+.settings-me__copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.settings-me__copy strong {
+  display: block;
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-me__copy small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 9.5px;
+}
+
+.settings-me__arrow {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 18px;
+  font-style: normal;
+}

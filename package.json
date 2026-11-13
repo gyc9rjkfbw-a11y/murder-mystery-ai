@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "AI 剧本杀 —— 前端（Vue 3 + Vite + TypeScript 移动端 H5）",
+  "description": "谜案剧本杀 —— 前端（Vue 3 + Vite + TypeScript 移动端 H5）",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
@@ -21,7 +21,7 @@
     "verify:profile": "node .verify/profile.mjs",
     "verify:pwa": "node .verify/pwa.mjs",
     "app": "node scripts/make-app.mjs",
-    "icons": "powershell -ExecutionPolicy Bypass -File scripts/make-icons.ps1"
+    "icons": "node scripts/make-icons.mjs"
   },
   "dependencies": {
     "pinia": "^2.2.6",

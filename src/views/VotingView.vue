@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AppTopBar from '@/components/AppTopBar.vue'
+import RoleAvatar from '@/components/RoleAvatar.vue'
 import CountdownPill from '@/components/CountdownPill.vue'
 import PhaseStepper from '@/components/PhaseStepper.vue'
 import { useToast } from '@/composables/useToast'
@@ -101,6 +102,7 @@ function reveal() {
         @click="picked = r.name"
       >
         <div style="display: flex; align-items: center; gap: 10px">
+          <RoleAvatar :role="r" :size="40" tone="none" />
           <div style="flex: 1; min-width: 0">
             <div style="font-size: 15px; font-weight: 600">{{ r.name }}</div>
             <div class="tiny muted">{{ r.identity }}</div>

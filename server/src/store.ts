@@ -1,29 +1,43 @@
 /**
- * 玩家档案（服务端持久化）
+ * 玩家档案（服务端的业务层）
  * ==================================================================
  * 为什么需要这一层：房间和座位全是内存状态，服务器一重启 / 房间一回收，
- * 玩家的昵称、头像、战绩就全没了；`create` / `join` 也只带一个昵称字符串，
- * 服务器根本不认识「同一个人」。这里给「设备档案」一个落盘的家。
+ * 玩家的昵称、头像、战绩就全没了。这里给「设备档案」一个落盘的家。
  *
- * 设计约束（每一条都是刻意的）：
- *   1. **零依赖**：只用 `node:fs`，单文件 JSON + 原子写（tmp → rename）。
- *      顺带做一个 `profiles.json.bak`，rename 之后再抄一份，防手滑删库。
- *   2. **绝不存密钥**：`ai.apiKey` 无论客户端发什么都丢弃，既不落盘也不回显。
- *      服务器没有理由拿到玩家的大模型密钥。
- *   3. **坏文件不致命**：解析失败就把原文件改名成 `.corrupt-<时间>` 备份，
- *      然后从空库开始 —— 服务器必须能起来，不能因为一个坏 JSON 就挂。
- *   4. **有界**：档案数、历史条数、单字段长度全都有上限，防止有人刷爆磁盘。
- *   5. **战绩以服务器为准**：由房间在复盘时结算后调用 `recordGame()`，
+ * 存储已经换成 **SQLite 数据库**（`players.db`，见 db.ts）：
+ *   整份 JSON 全量重写那套不抗并发、也没法保证「一局战绩 + 统计」的原子性，
+ *   而玩家的战绩是只会变多的账，必须由带事务与约束的数据库来管。
+ *
+ * 这一层只做**清洗与业务规则**，完整性交给数据库：
+ *   1. **绝不存密钥**：`ai.apiKey` 无论客户端发什么都丢弃，既不落盘也不回显。
+ *      数据库里根本没有放密钥的列。
+ *   2. **战绩以服务器为准**：房间在复盘时调用 `recordGame()`，
  *      不接受客户端上报的胜负（客户端说什么都不算）。
+ *   3. **重复结算不重复记账**：同一玩家 + 同一房间 2 秒内的同一条记录视为重试。
+ *   4. **有界**：档案数、历史条数、单字段长度全都有上限。
+ *   5. **老数据不丢**：首次启动若发现旧的 `profiles.json`，自动整库导入并改名留档。
+ *
+ * 坏库不致命：integrity 检查失败 → 隔离 → 从 `players.db.bak` 恢复 → 最后才空库启动。
  */
 
 import fs from 'node:fs'
 import path from 'node:path'
+import {
+  DB_BACKUP,
+  DB_FILE,
+  DB_SCHEMA_VERSION,
+  PlayersDb,
+  type AiRow,
+  type GameRow,
+  type IntegrityReport,
+  type PlayerBundle,
+} from './db'
 
-/** 落盘文件名（放在 dataDir 下） */
+/** 旧版 JSON 文件名（只用于首次迁移） */
 export const PROFILE_FILE = 'profiles.json'
-/** 备份文件名 */
+/** 旧版备份文件名（只用于首次迁移） */
 export const PROFILE_BACKUP = 'profiles.json.bak'
+export { DB_FILE, DB_BACKUP }
 
 /** 各类上限：都按「够用但不失控」取值，改这里就能全局生效 */
 export const PROFILE_LIMITS = {
@@ -36,6 +50,9 @@ export const PROFILE_LIMITS = {
   providerLen: 16,
   /** 每人保留最近多少局 */
   historyLen: 30,
+  /** 偏好题材最多记几个、每个最长多少字 */
+  genresLen: 6,
+  genreLen: 24,
   /** 最多存多少个档案，超了按「最久没上线」淘汰 */
   profiles: 5000,
   /** 单次请求体上限（字节），超过直接 413 */
@@ -83,9 +100,11 @@ export interface PlayerProfile {
   stats: PlayerStats
   history: GameRecord[]
   ai: AiPrefs
+  /** 偏好题材（喜欢哪几类剧本；服务端也存一份，换设备才带得走） */
+  genres: string[]
 }
 
-/** 落盘结构（带版本号，将来能平滑升级） */
+/** 旧版落盘结构（只用于迁移读取） */
 export interface ProfileFile {
   v: 1
   players: Record<string, PlayerProfile>
@@ -137,6 +156,19 @@ export function sanitizeAi(raw: unknown): AiPrefs {
   }
 }
 
+/** 清洗偏好题材：去重、限量、保序 */
+export function sanitizeGenres(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  const out: string[] = []
+  for (const item of raw) {
+    const label = cleanText(item, PROFILE_LIMITS.genreLen)
+    if (!label || out.includes(label)) continue
+    out.push(label)
+    if (out.length >= PROFILE_LIMITS.genresLen) break
+  }
+  return out
+}
+
 export function emptyStats(): PlayerStats {
   return { games: 0, wins: 0, losses: 0, asMurderer: 0, murdererWins: 0 }
 }
@@ -152,6 +184,7 @@ export function emptyProfile(id: string, now: number, name = '玩家', avatar = 
     stats: emptyStats(),
     history: [],
     ai: sanitizeAi(null),
+    genres: [],
   }
 }
 
@@ -174,8 +207,8 @@ export function sanitizeGameRecord(
   }
 }
 
-/** 从磁盘内容还原成 Map；任何一条坏数据都跳过而不是整体失败 */
-function parseFile(raw: string): { players: Map<string, PlayerProfile>; skipped: number } {
+/** 从旧版 JSON 内容还原成 Map；任何一条坏数据都跳过而不是整体失败 */
+function parseLegacyFile(raw: string): { players: Map<string, PlayerProfile>; skipped: number } {
   const players = new Map<string, PlayerProfile>()
   const parsed = JSON.parse(raw) as Partial<ProfileFile>
   const source = parsed && typeof parsed === 'object' ? parsed.players : null
@@ -209,130 +242,244 @@ function parseFile(raw: string): { players: Map<string, PlayerProfile>; skipped:
         .filter((h): h is GameRecord => h !== null)
         .slice(-PROFILE_LIMITS.historyLen),
       ai: sanitizeAi(obj.ai),
+      genres: sanitizeGenres(obj.genres),
     })
   }
   return { players, skipped }
 }
 
+/** 数据库行 → 对外形状 */
+function toProfile(bundle: PlayerBundle): PlayerProfile {
+  const { player, stats, ai, genres, games } = bundle
+  return {
+    id: player.id,
+    name: player.name,
+    avatar: player.avatar,
+    createdAt: Number(player.created_at) || 0,
+    updatedAt: Number(player.updated_at) || 0,
+    lastSeenAt: Number(player.last_seen_at) || 0,
+    stats: {
+      games: Number(stats.games) || 0,
+      wins: Number(stats.wins) || 0,
+      losses: Number(stats.losses) || 0,
+      asMurderer: Number(stats.as_murderer) || 0,
+      murdererWins: Number(stats.murderer_wins) || 0,
+    },
+    history: games.map((g: GameRow) => ({
+      at: Number(g.played_at) || 0,
+      roomCode: g.room_code,
+      theme: g.theme,
+      playerCount: Number(g.player_count) || 0,
+      result: g.result === 'win' ? 'win' : 'lose',
+      role: g.role,
+      isMurderer: g.is_murderer === 1,
+    })),
+    ai: { provider: ai.provider, model: ai.model, baseUrl: ai.base_url },
+    genres: [...genres],
+  }
+}
+
+/** 落盘状态（健康检查 / 测试用） */
+export interface StoreSnapshot {
+  profileCount: number
+  fileBytes: number
+  writes: number
+  filePath: string
+  backupPath: string
+  backupBytes: number
+  games: number
+  schemaVersion: number
+  engine: 'sqlite'
+  integrity: IntegrityReport
+}
+
 /**
  * 档案库。
- * 读写在内存里完成，落盘是**去抖**的（默认 250ms 内的多次修改合并成一次写），
- * 进程退出 / 关闭服务器时用 `close()` 强制落盘。
+ * 每次写都是**一个 SQLite 事务**（提交即落盘，WAL + synchronous=FULL），
+ * 所以不再需要「去抖 + 全量重写」；`flush()` 只负责 checkpoint 与备份。
  */
 export class ProfileStore {
   readonly dir: string
   readonly filePath: string
-  private readonly players = new Map<string, PlayerProfile>()
+  readonly backupPath: string
+  private readonly db: PlayersDb
   private readonly now: () => number
   private readonly maxProfiles: number
   private readonly quiet: boolean
-  private saveTimer: NodeJS.Timeout | null = null
-  private writes = 0
   private closed = false
 
   constructor(options: StoreOptions = {}) {
     this.dir = path.resolve(options.dir ?? path.join(process.cwd(), 'server', 'data'))
-    this.filePath = path.join(this.dir, PROFILE_FILE)
+    this.filePath = path.join(this.dir, DB_FILE)
+    this.backupPath = path.join(this.dir, DB_BACKUP)
     this.now = options.now ?? (() => Date.now())
     this.maxProfiles = Math.max(1, options.maxProfiles ?? PROFILE_LIMITS.profiles)
     this.quiet = options.quiet === true
-    this.load()
+    this.db = new PlayersDb({
+      file: this.filePath,
+      now: this.now,
+      onLog: (line) => this.say(line),
+    })
+    this.migrateLegacy()
+    this.say(`玩家数据库就绪（${this.db.count()} 份档案 · ${this.db.gameCount()} 条对局）`)
   }
 
   private say(line: string): void {
     if (!this.quiet) console.log(`[档案] ${line}`)
   }
 
-  /** 启动时读一次；文件不存在 / 坏掉都不抛错 */
-  load(): void {
-    this.players.clear()
-    let raw = ''
-    try {
-      raw = fs.readFileSync(this.filePath, 'utf8')
-    } catch {
-      return // 没文件 = 全新安装，正常
-    }
-    try {
-      const { players, skipped } = parseFile(raw)
-      for (const [id, p] of players) this.players.set(id, p)
-      if (skipped > 0) this.say(`跳过 ${skipped} 条格式不对的档案`)
-      if (this.players.size > 0) this.say(`已载入 ${this.players.size} 个玩家档案`)
-    } catch (e) {
-      const backup = `${this.filePath}.corrupt-${this.now()}`
+  /** 对外只读的数据库句柄信息（健康检查 / 运维用） */
+  get engine(): PlayersDb {
+    return this.db
+  }
+
+  /**
+   * 首次启动时把旧的 `profiles.json` 整库导入 SQLite。
+   * 导入成功后把旧文件改名成 `profiles.json.migrated-<时间>` 留档 —— 不删任何东西。
+   */
+  private migrateLegacy(): void {
+    if (this.db.count() > 0) return
+    let source = ''
+    for (const name of [PROFILE_FILE, PROFILE_BACKUP]) {
+      const candidate = path.join(this.dir, name)
+      if (!fs.existsSync(candidate)) continue
       try {
-        fs.renameSync(this.filePath, backup)
-        this.say(`档案文件损坏（${(e as Error).message}），已备份为 ${path.basename(backup)}，从空库开始`)
+        source = fs.readFileSync(candidate, 'utf8')
       } catch {
-        this.say(`档案文件损坏且无法备份（${(e as Error).message}），从空库开始`)
+        continue
       }
-      this.players.clear()
+      if (source.trim()) break
+      source = ''
     }
+    if (!source.trim()) return
+
+    let parsed: { players: Map<string, PlayerProfile>; skipped: number }
+    try {
+      parsed = parseLegacyFile(source)
+    } catch (e) {
+      this.say(`旧版档案解析失败（${(e as Error).message}），跳过迁移`)
+      return
+    }
+    let imported = 0
+    for (const profile of parsed.players.values()) {
+      try {
+        this.db.importProfile({
+          id: profile.id,
+          name: profile.name,
+          avatar: profile.avatar,
+          createdAt: profile.createdAt,
+          updatedAt: profile.updatedAt,
+          lastSeenAt: profile.lastSeenAt,
+          stats: {
+            games: profile.stats.games,
+            wins: profile.stats.wins,
+            losses: profile.stats.losses,
+            as_murderer: profile.stats.asMurderer,
+            murderer_wins: profile.stats.murdererWins,
+          },
+          ai: profile.ai,
+          genres: profile.genres,
+          games: profile.history.map((g) => ({
+            played_at: g.at,
+            room_code: g.roomCode,
+            theme: g.theme,
+            player_count: g.playerCount,
+            result: g.result,
+            role: g.role,
+            is_murderer: g.isMurderer ? 1 : 0,
+          })),
+        })
+        imported += 1
+      } catch (e) {
+        this.say(`迁移档案 ${profile.id} 失败（${(e as Error).message}），跳过这一条`)
+      }
+    }
+    if (parsed.skipped > 0) this.say(`旧版档案里有 ${parsed.skipped} 条格式不对，已跳过`)
+    if (imported > 0) {
+      const stamp = this.now()
+      try {
+        fs.renameSync(path.join(this.dir, PROFILE_FILE), path.join(this.dir, `${PROFILE_FILE}.migrated-${stamp}`))
+      } catch {
+        /* 旧文件改不了名不影响已经导入的数据 */
+      }
+      this.say(`已把 ${imported} 份旧版档案迁移进数据库（原文件已改名留档）`)
+    }
+  }
+
+  /** 从磁盘重新装载（模拟重启；已有连接会先关掉） */
+  load(): void {
+    this.db.reopen()
   }
 
   get(id: unknown): PlayerProfile | null {
     const key = normalizePlayerId(id)
     if (!key) return null
-    const found = this.players.get(key)
-    return found ? cloneProfile(found) : null
+    const bundle = this.db.read(key, PROFILE_LIMITS.historyLen)
+    return bundle ? toProfile(bundle) : null
   }
 
   count(): number {
-    return this.players.size
+    return this.db.count()
   }
 
-  /** 落盘状态（健康检查 / 测试用） */
-  statsSnapshot(): { profileCount: number; fileBytes: number; writes: number; filePath: string } {
-    let fileBytes = 0
-    try {
-      fileBytes = fs.statSync(this.filePath).size
-    } catch {
-      fileBytes = 0
+  /** 完整性对账（同步跑一次，返回报告） */
+  checkIntegrity(): IntegrityReport {
+    return this.db.checkIntegrity()
+  }
+
+  statsSnapshot(): StoreSnapshot {
+    return {
+      profileCount: this.db.count(),
+      fileBytes: this.db.bytes(),
+      writes: this.db.writes,
+      filePath: this.filePath,
+      backupPath: this.backupPath,
+      backupBytes: this.db.backupBytes(),
+      games: this.db.gameCount(),
+      schemaVersion: DB_SCHEMA_VERSION,
+      engine: 'sqlite',
+      integrity: this.db.integrityReport,
     }
-    return { profileCount: this.players.size, fileBytes, writes: this.writes, filePath: this.filePath }
   }
 
   /**
-   * 创建或更新档案（昵称 / 头像 / AI 偏好）。
+   * 创建或更新档案（昵称 / 头像 / AI 偏好 / 偏好题材）。
    * 只有显式传进来的字段才会被改，`undefined` 表示「这次不动」。
    */
-  upsert(input: { id: unknown; name?: unknown; avatar?: unknown; ai?: unknown }): PlayerProfile | null {
+  upsert(input: { id: unknown; name?: unknown; avatar?: unknown; ai?: unknown; genres?: unknown }): PlayerProfile | null {
     const id = normalizePlayerId(input.id)
     if (!id) return null
     const now = this.now()
-    const existing = this.players.get(id)
-    const profile = existing ? cloneProfile(existing) : emptyProfile(id, now)
-    if (input.name !== undefined) profile.name = cleanText(input.name, PROFILE_LIMITS.nameLen) || profile.name
-    if (input.avatar !== undefined) profile.avatar = sanitizeAvatar(input.avatar, profile.avatar)
-    if (input.ai !== undefined) profile.ai = sanitizeAi(input.ai)
-    profile.updatedAt = now
-    profile.lastSeenAt = now
-    this.players.set(id, profile)
+    const existing = this.db.read(id, PROFILE_LIMITS.historyLen)
+
+    const name = input.name === undefined ? undefined : cleanText(input.name, PROFILE_LIMITS.nameLen) || undefined
+    const avatar =
+      input.avatar === undefined
+        ? undefined
+        : sanitizeAvatar(input.avatar, existing ? existing.player.avatar : '🖤')
+    const ai = input.ai === undefined ? undefined : sanitizeAi(input.ai)
+    const genres = input.genres === undefined ? undefined : sanitizeGenres(input.genres)
+
+    this.db.savePlayer({ id, name, avatar, ai, genres, now })
     this.trimOverflow()
-    this.scheduleSave()
-    return cloneProfile(profile)
+    return this.get(id)
   }
 
-  /** 入座 / 重连时刷新「最近上线」与昵称头像（不改 AI 偏好与战绩） */
+  /** 入座 / 重连时刷新「最近上线」与昵称头像（不改 AI 偏好、偏好题材与战绩） */
   touch(input: { id: unknown; name?: unknown; avatar?: unknown }): PlayerProfile | null {
     const id = normalizePlayerId(input.id)
     if (!id) return null
-    const existing = this.players.get(id)
+    const existing = this.db.read(id, PROFILE_LIMITS.historyLen)
     if (!existing) return null
-    const profile = cloneProfile(existing)
-    if (input.name !== undefined) {
-      const name = cleanText(input.name, PROFILE_LIMITS.nameLen)
-      if (name) profile.name = name
-    }
-    if (input.avatar !== undefined) profile.avatar = sanitizeAvatar(input.avatar, profile.avatar)
-    profile.lastSeenAt = this.now()
-    this.players.set(id, profile)
-    this.scheduleSave()
-    return cloneProfile(profile)
+    const name = input.name === undefined ? undefined : cleanText(input.name, PROFILE_LIMITS.nameLen) || undefined
+    const avatar = input.avatar === undefined ? undefined : sanitizeAvatar(input.avatar, existing.player.avatar)
+    const changed = this.db.touch({ id, name, avatar, now: this.now() })
+    return changed ? this.get(id) : null
   }
 
   /**
    * 记一局战绩。**由服务器在复盘时调用**，客户端上报的胜负一律不采信。
-   * 每局每个座位只应该调用一次（房间侧用 `statsRecorded` 保证）。
+   * 每局每个座位只应该调用一次（房间侧用 `statsRecorded` 保证，数据库再兜一层去重）。
    */
   recordGame(
     id: unknown,
@@ -341,10 +488,9 @@ export class ProfileStore {
     const key = normalizePlayerId(id)
     if (!key) return null
     const now = this.now()
-    const existing = this.players.get(key)
-    const profile = existing ? cloneProfile(existing) : emptyProfile(key, now)
     const result: 'win' | 'lose' = record.result === 'win' ? 'win' : 'lose'
-    const entry: GameRecord = {
+    this.db.addGame({
+      playerId: key,
       at: Number.isFinite(record.at) ? Number(record.at) : now,
       roomCode: cleanText(record.roomCode, 8),
       theme: cleanText(record.theme, 40),
@@ -352,91 +498,44 @@ export class ProfileStore {
       result,
       role: cleanText(record.role, 24),
       isMurderer: record.isMurderer === true,
-    }
-    profile.stats.games += 1
-    if (result === 'win') profile.stats.wins += 1
-    else profile.stats.losses += 1
-    if (entry.isMurderer) {
-      profile.stats.asMurderer += 1
-      if (result === 'win') profile.stats.murdererWins += 1
-    }
-    profile.history = [...profile.history, entry].slice(-PROFILE_LIMITS.historyLen)
-    profile.lastSeenAt = now
-    this.players.set(key, profile)
+      keep: PROFILE_LIMITS.historyLen,
+      now,
+    })
     this.trimOverflow()
-    this.scheduleSave()
-    return cloneProfile(profile)
+    return this.get(key)
   }
 
-  /** 超出上限时按「最久没上线」淘汰，避免文件无限长大 */
+  /** 超出上限时按「最久没上线」淘汰，避免库无限长大 */
   private trimOverflow(): void {
-    if (this.players.size <= this.maxProfiles) return
-    const sorted = [...this.players.values()].sort((a, b) => a.lastSeenAt - b.lastSeenAt)
-    const drop = this.players.size - this.maxProfiles
-    for (const victim of sorted.slice(0, drop)) this.players.delete(victim.id)
-    this.say(`档案数超过上限 ${this.maxProfiles}，淘汰了 ${drop} 个最久未上线的档案`)
+    const total = this.db.count()
+    if (total <= this.maxProfiles) return
+    const victims = this.db.oldestIds(total - this.maxProfiles)
+    const removed = this.db.deletePlayers(victims)
+    if (removed > 0) this.say(`档案数超过上限 ${this.maxProfiles}，淘汰了 ${removed} 个最久未上线的档案`)
   }
 
-  private scheduleSave(): void {
-    if (this.closed) return
-    if (this.saveTimer) return
-    this.saveTimer = setTimeout(() => {
-      this.saveTimer = null
-      this.flush()
-    }, 250)
-    this.saveTimer.unref?.()
-  }
-
-  /** 立即落盘（原子写：先写 .tmp 再 rename，避免半截 JSON） */
+  /**
+   * 把 WAL 合并回主文件并留一份一致性备份。
+   * 注意：SQLite 的每次写**已经提交落盘**了，这里不是「补写」，只是收尾 + 备份。
+   */
   flush(): void {
     if (this.closed) return
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer)
-      this.saveTimer = null
-    }
-    const payload: ProfileFile = { v: 1, players: Object.fromEntries(this.players) }
-    let json = ''
-    try {
-      json = JSON.stringify(payload)
-    } catch (e) {
-      this.say(`序列化档案失败：${(e as Error).message}`)
-      return
-    }
-    try {
-      fs.mkdirSync(this.dir, { recursive: true })
-      const tmp = `${this.filePath}.tmp`
-      fs.writeFileSync(tmp, json, 'utf8')
-      fs.renameSync(tmp, this.filePath)
-      // rename 已经是原子的；再抄一份备份，给人一个「手滑也能救」的机会
-      try {
-        fs.writeFileSync(path.join(this.dir, PROFILE_BACKUP), json, 'utf8')
-      } catch {
-        /* 备份失败不影响主流程 */
-      }
-      this.writes += 1
-    } catch (e) {
-      this.say(`写档案失败（磁盘只读或权限不足？）：${(e as Error).message}`)
-    }
+    this.db.checkpoint()
+    this.db.backup()
+    this.db.checkIntegrity()
   }
 
-  /** 关服前调用：强制落盘并停止去抖计时器 */
+  /** 关服前调用：checkpoint + 备份 + 关闭连接 */
   close(): void {
     if (this.closed) return
-    this.flush()
+    this.db.checkpoint()
+    this.db.backup()
+    this.db.close()
     this.closed = true
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer)
-      this.saveTimer = null
-    }
   }
 }
 
-/** 导出副本，别让调用方改到内部状态 */
-function cloneProfile(p: PlayerProfile): PlayerProfile {
-  return {
-    ...p,
-    stats: { ...p.stats },
-    history: p.history.map((h) => ({ ...h })),
-    ai: { ...p.ai },
-  }
+/** 便于测试/运维：把 AI 行转成偏好（保留导出，避免别处重复写） */
+export function aiFromRow(row: AiRow): AiPrefs {
+  return { provider: row.provider, model: row.model, baseUrl: row.base_url }
 }

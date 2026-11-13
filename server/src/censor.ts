@@ -13,6 +13,7 @@
  * | self.isMurderer / camp | ✅ 平民 | ✅ 凶手 | — | ✅ |
  * | script.roles[i].is_murderer | 只有自己是 true 才为 true | 同左 | 恒 false | ✅ 真实值 |
  * | script.roles[i].full_script | 只有自己非空 | 同左 | 空字符串 | ✅ |
+ * | script.roles[i].gender（头像用） | ✅ 公开 | ✅ 公开 | ✅ 公开 | ✅ 公开 |
  * | script.murderer_privilege | ❌ null | ✅ 第 2 轮起 | ❌ null | ✅ |
  * | script.global_truth | ❌ 空壳 | ❌ 空壳 | ❌ 空壳 | ✅ 真实值 |
  * | script.clue_batches | 只含已发放 tier | 同左 | 同左 | ✅ 全部 |
@@ -25,7 +26,6 @@
  * | voice[]（谁在麦上） | ✅ 公开 | ✅ 公开 | ✅ 公开 | ✅ 公开 |
  */
 
-import { pacingFor } from '@/services/rules'
 import type {
   RevealView,
   SeatBrief,
@@ -47,6 +47,8 @@ function roleSkeleton(role: Role): Role {
   return {
     name: role.name,
     identity: role.identity,
+    // 性别是公开的装饰信息（只影响头像），不泄露阵营，照常下发
+    gender: role.gender,
     is_murderer: false,
     surface_task: '',
     deep_task: '',
@@ -81,7 +83,8 @@ export function censorSeat(room: Room, seatId: string): SeatView {
 
   const atReveal = room.phase === 'reveal'
   const script = room.script
-  const pacing = pacingFor(room.playerCount)
+  // 难度让「凶手特权第几轮解锁」提前或延后，这里必须用房间自己的节奏
+  const pacing = room.pacing
   const myRoleName = seat.roleName
   const myRole = myRoleName ? room.roleByName(myRoleName) : null
   const truth = script?.global_truth ?? blankTruth()
@@ -205,6 +208,7 @@ export function censorSeat(room: Room, seatId: string): SeatView {
     roomCode: room.code,
     playerCount: room.playerCount,
     theme: room.theme,
+    difficulty: room.difficulty,
     phase: room.phase,
     started: room.started,
     round: room.round,

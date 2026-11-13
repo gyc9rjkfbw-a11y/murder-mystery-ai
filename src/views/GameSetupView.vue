@@ -1,15 +1,21 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AppTopBar from '@/components/AppTopBar.vue'
 import BrandMark from '@/components/BrandMark.vue'
 import CustomScriptPanel from '@/components/CustomScriptPanel.vue'
 import { useToast } from '@/composables/useToast'
+import {
+  DIFFICULTIES,
+  difficultyEffectText,
+  difficultyFor,
+  normalizeDifficulty,
+} from '@/services/difficulty'
 import { PRESET_THEMES } from '@/services/templates'
 import { useGameStore } from '@/stores/game'
 import { useNetStore } from '@/stores/net'
 import { randomNickname, useSettingsStore } from '@/stores/settings'
-import type { ScriptPackage } from '@/types/script'
+import type { Difficulty, ScriptPackage } from '@/types/script'
 
 const router = useRouter()
 const game = useGameStore()
@@ -18,7 +24,24 @@ const settings = useSettingsStore()
 const toast = useToast()
 
 const playerCount = ref(settings.state.defaultPlayerCount)
-const theme = ref(PRESET_THEMES[0].theme)
+/**
+ * 题材列表：在「我的 → 游戏偏好」里选过的排前面（稳定排序，其余保持原顺序）。
+ * 一个都没选时就是原来的六格，顺序与升级前完全一致。
+ */
+const themeOptions = computed(() => {
+  const pref = settings.state.preferredGenres
+  if (!pref.length) return PRESET_THEMES
+  return [...PRESET_THEMES].sort(
+    // 偏好的权重 0、其余 1；sort 是稳定排序，同组内保持原来的先后
+    (a, b) => Number(!pref.includes(a.label)) - Number(!pref.includes(b.label)),
+  )
+})
+const theme = ref(themeOptions.value[0]?.theme ?? PRESET_THEMES[0].theme)
+/** 本局难度：三档都能自由选，选完会记成下次的默认档 */
+const difficulty = ref<Difficulty>(settings.state.defaultDifficulty)
+const difficultyMeta = computed(() => difficultyFor(difficulty.value))
+/** 这一档在当前人数下到底会怎样（数字由规则现算，不写死） */
+const difficultyEffect = computed(() => difficultyEffectText(playerCount.value, difficulty.value))
 const joinCode = ref('')
 const showJoin = ref(false)
 const myName = ref(settings.state.playerName)
@@ -39,6 +62,7 @@ function saveName() {
   const name = myName.value.trim() || randomNickname()
   settings.state.playerName = name
   settings.state.defaultPlayerCount = playerCount.value
+  settings.state.defaultDifficulty = normalizeDifficulty(difficulty.value)
   myName.value = name
   return name
 }
@@ -48,7 +72,7 @@ function createOnline() {
     toast.warn('先给这局定个题材')
     return
   }
-  net.createRoom(saveName(), playerCount.value, theme.value.trim())
+  net.createRoom(saveName(), playerCount.value, theme.value.trim(), undefined, difficulty.value)
   router.push('/lobby')
 }
 
@@ -68,7 +92,7 @@ function createRoom() {
     return
   }
   saveName()
-  game.createRoom(playerCount.value, theme.value.trim())
+  game.createRoom(playerCount.value, theme.value.trim(), difficulty.value)
   router.push('/room')
 }
 
@@ -84,7 +108,8 @@ function startCustomSolo(pkg: ScriptPackage) {
 
 function startCustomOnline(pkg: ScriptPackage) {
   const name = saveName()
-  net.createRoom(name, pkg.roles.length, pkg.game_config.theme, pkg)
+  // 自定义剧本以剧本自带的难度为准（没标就走标准档）
+  net.createRoom(name, pkg.roles.length, pkg.game_config.theme, pkg, pkg.game_config.difficulty)
   router.push('/lobby')
 }
 </script>
@@ -94,7 +119,7 @@ function startCustomOnline(pkg: ScriptPackage) {
 
   <main class="page setup-page">
     <section class="setup-hero">
-      <BrandMark class="setup-hero__mark" label="迷案游戏标志" />
+      <BrandMark class="setup-hero__mark" label="谜案剧本杀游戏标志" />
       <div>
         <div class="setup-hero__kicker">START A NEW CASE</div>
         <h1>开一局</h1>
@@ -149,15 +174,43 @@ function startCustomOnline(pkg: ScriptPackage) {
 
       <div class="home-field">
         <div class="home-field__head">
+          <span>剧本难度</span>
+          <small>只改节奏与线索发放，不改凶手与真相</small>
+        </div>
+        <div class="home-difficulties">
+          <button
+            v-for="d in DIFFICULTIES"
+            :key="d.id"
+            class="home-difficulty"
+            :class="{ 'home-difficulty--on': difficulty === d.id }"
+            :aria-pressed="difficulty === d.id ? 'true' : 'false'"
+            @click="difficulty = d.id"
+          >
+            <span class="home-difficulty__emoji" aria-hidden="true">{{ d.emoji }}</span>
+            <strong>{{ d.label }}</strong>
+            <span class="home-difficulty__tag">{{ d.tagline }}</span>
+          </button>
+        </div>
+        <p class="home-difficulty-note">
+          {{ difficultyMeta.detail }}<br />
+          <span class="muted">本局实际：{{ difficultyEffect }}</span>
+        </p>
+      </div>
+
+      <div class="home-field">
+        <div class="home-field__head">
           <span>案件题材</span>
           <small>也可以自己写</small>
         </div>
         <div class="home-themes">
           <button
-            v-for="item in PRESET_THEMES"
+            v-for="item in themeOptions"
             :key="item.theme"
             class="home-theme"
-            :class="{ 'home-theme--on': theme === item.theme }"
+            :class="{
+              'home-theme--on': theme === item.theme,
+              'home-theme--pref': settings.state.preferredGenres.includes(item.label),
+            }"
             @click="pickTheme(item.theme)"
           >
             <span class="home-theme__emoji">{{ item.emoji }}</span>

@@ -40,14 +40,18 @@ export const useCustomScriptsStore = defineStore('customScripts', () => {
   function addText(text: string): CustomScriptParseResult {
     const parsed = parseCustomScriptText(text)
     if (!parsed.ok || !parsed.pkg) return parsed
-    const record = createCustomScriptRecord(parsed.pkg)
+    const record = createCustomScriptRecord(parsed.pkg, Date.now(), parsed.rawText ?? text)
     records.value = upsertCustomScript(records.value, record)
     persist()
     return parsed
   }
 
+  /** AI 生成 / 内置剧本：直接入库，不经过文本解析 */
   function addPackage(pkg: ScriptPackage): CustomScriptParseResult {
-    return addText(JSON.stringify(pkg))
+    const record = createCustomScriptRecord(pkg)
+    records.value = upsertCustomScript(records.value, record)
+    persist()
+    return { ok: true, pkg, errors: [] }
   }
 
   function remove(id: string) {

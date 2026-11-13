@@ -1,6 +1,9 @@
 import { defineStore } from 'pinia'
 import { computed, reactive, ref, watch } from 'vue'
 import type { AiConfig, AiProvider } from '@/services/aiEngine'
+import { DEFAULT_DIFFICULTY, normalizeDifficulty } from '@/services/difficulty'
+import { PRESET_THEMES } from '@/services/templates'
+import type { Difficulty } from '@/types/script'
 import {
   fetchProfile,
   playerId,
@@ -24,6 +27,13 @@ export interface SettingsState {
   demoMode: boolean
   /** 新房间默认人数 */
   defaultPlayerCount: 4 | 5 | 6
+  /** 新房间默认难度（开局页可以随时改） */
+  defaultDifficulty: Difficulty
+  /**
+   * 喜欢的剧本类型（题材 label 数组，取自 PRESET_THEMES）。
+   * 纯偏好：不影响生成规则与难度，只用来在开局页把偏好的题材标出来 + 排序靠前。
+   */
+  preferredGenres: string[]
   /** 动画偏好：跟随系统或强制精简 */
   motion: 'system' | 'reduced'
   /** 剧本阅读字号 */
@@ -47,10 +57,29 @@ function defaultState(): SettingsState {
     avatar: randomAvatar(),
     demoMode: false,
     defaultPlayerCount: 5,
+    defaultDifficulty: DEFAULT_DIFFICULTY,
+    preferredGenres: [],
     motion: 'system',
     readingFontSize: 'normal',
     ai: { ...DEFAULT_AI },
   }
+}
+
+/**
+ * 题材偏好只认 PRESET_THEMES 里真实存在的 label：
+ * 旧版本 / 手改 localStorage 写进来的脏值（题材全名、emoji、已下线的题材）
+ * 一律丢掉，免得界面上出现一个点不亮也删不掉的幽灵标签。
+ */
+export function normalizeGenres(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const allowed = new Set(PRESET_THEMES.map((t) => t.label))
+  const out: string[] = []
+  for (const item of value) {
+    const label = String(item ?? '').trim()
+    if (!allowed.has(label) || out.includes(label)) continue
+    out.push(label)
+  }
+  return out
 }
 
 /**
@@ -95,10 +124,14 @@ export const useSettingsStore = defineStore('settings', () => {
     ai: { ...DEFAULT_AI, ...(saved.ai ?? {}) },
   })
   if (![4, 5, 6].includes(state.defaultPlayerCount)) state.defaultPlayerCount = 5
+  // 旧存档没有难度 / 写过脏值，一律回落到标准档
+  state.defaultDifficulty = normalizeDifficulty(state.defaultDifficulty)
   if (state.motion !== 'system' && state.motion !== 'reduced') state.motion = 'system'
   if (state.readingFontSize !== 'normal' && state.readingFontSize !== 'large') {
     state.readingFontSize = 'normal'
   }
+  // 旧存档没有偏好 / 存进脏值：退回空数组（= 不挑，六种都行）
+  state.preferredGenres = normalizeGenres(state.preferredGenres)
 
   watch(
     () => state.motion,
@@ -114,6 +147,8 @@ export const useSettingsStore = defineStore('settings', () => {
         playerName: v.playerName,
         avatar: v.avatar,
         defaultPlayerCount: v.defaultPlayerCount,
+        defaultDifficulty: v.defaultDifficulty,
+        preferredGenres: v.preferredGenres,
         motion: v.motion,
         readingFontSize: v.readingFontSize,
         ai: v.ai,
@@ -139,6 +174,10 @@ export const useSettingsStore = defineStore('settings', () => {
     profile.value = next
     if (!next) return
     saveJSON(STORAGE_KEYS.profileCache, next)
+    // 换设备时把「喜欢哪几类剧本」也带过来（本机已经选过就不覆盖）
+    if (state.preferredGenres.length === 0 && next.genres?.length) {
+      state.preferredGenres = normalizeGenres(next.genres)
+    }
     if (!freshInstall) return
     if (next.name) state.playerName = next.name
     if (next.avatar) state.avatar = next.avatar
@@ -174,6 +213,7 @@ export const useSettingsStore = defineStore('settings', () => {
         name: state.playerName,
         avatar: state.avatar,
         ai: { provider: state.ai.provider, model: state.ai.model, baseUrl: state.ai.baseUrl },
+        genres: state.preferredGenres,
       })
       const result = await fetchProfile()
       profileSynced.value = pushed.ok && result.ok
@@ -184,13 +224,15 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
-  /** 把本机昵称 / 头像 / AI 偏好推给服务器（去抖；不带密钥） */
+  /** 把本机昵称 / 头像 / AI 偏好 / 题材偏好推给服务器（去抖；不带密钥） */
   function pushProfile(): void {
-    saveProfileSoon({
+    // 传函数而不是快照：到真正发送时再读一次 store，保证带上刚选的题材
+    saveProfileSoon(() => ({
       name: state.playerName,
       avatar: state.avatar,
       ai: { provider: state.ai.provider, model: state.ai.model, baseUrl: state.ai.baseUrl },
-    })
+      genres: [...state.preferredGenres],
+    }))
   }
 
   const stats = computed(() => profile.value?.stats ?? { games: 0, wins: 0, losses: 0, asMurderer: 0, murdererWins: 0 })
@@ -198,6 +240,14 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function setProvider(p: AiProvider) {
     state.ai.provider = p
+  }
+
+  /** 点一下选中 / 取消一个题材偏好（按点的先后记录，方便用户对照自己刚点的） */
+  function togglePreferredGenre(label: string) {
+    const next = state.preferredGenres.includes(label)
+      ? state.preferredGenres.filter((item) => item !== label)
+      : [...state.preferredGenres, label]
+    state.preferredGenres = normalizeGenres(next)
   }
 
   function reset() {
@@ -209,6 +259,7 @@ export const useSettingsStore = defineStore('settings', () => {
     isOnlineAI,
     providerLabel,
     setProvider,
+    togglePreferredGenre,
     reset,
     // 档案
     playerId,

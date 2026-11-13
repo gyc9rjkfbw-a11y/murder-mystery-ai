@@ -4,15 +4,16 @@ import { useRouter } from 'vue-router'
 import AppTopBar from '@/components/AppTopBar.vue'
 import CountdownPill from '@/components/CountdownPill.vue'
 import PhaseStepper from '@/components/PhaseStepper.vue'
+import RoleAvatar from '@/components/RoleAvatar.vue'
 import { useToast } from '@/composables/useToast'
 import { useGameStore } from '@/stores/game'
-import { pacingFor } from '@/services/rules'
 
 const router = useRouter()
 const game = useGameStore()
 const toast = useToast()
 
-const rule = computed(() => pacingFor(game.setup.playerCount))
+// 节奏统一取 store 的 rule（人数 + 本局难度），不要再按人数单独算一遍
+const rule = computed(() => game.rule)
 const summary = computed(() =>
   game.state.roundSummaries.find((s) => s.round === game.state.round),
 )
@@ -145,6 +146,7 @@ const voterName = (seatId: string) =>
           :class="{ 'chip--on': game.myStrawVote?.targetRoleName === r.name }"
           @click="vote(r.name)"
         >
+          <RoleAvatar :role="r" :size="20" tone="none" />
           {{ r.name }}
         </button>
       </div>

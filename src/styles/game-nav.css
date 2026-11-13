@@ -11,7 +11,10 @@
 }
 
 .shell--app-nav .dock {
-  bottom: calc(58px + env(safe-area-inset-bottom));
+  /* 先给一个不带 env() 的兜底值：安卓老 WebView 不认识 env() 时
+     整条 calc 会失效，dock 会掉到 0 并盖住底部导航栏 */
+  bottom: 58px;
+  bottom: calc(58px + env(safe-area-inset-bottom, 0px));
   padding-bottom: 10px;
   background: linear-gradient(180deg, rgba(10, 12, 18, 0), rgba(10, 12, 18, 0.94) 38%);
 }
@@ -21,11 +24,17 @@
   right: 0;
   bottom: 0;
   left: 0;
-  z-index: 45;
+  /* 高于页面内的 .dock(40)，低于弹层(60)：弹层盖住它是预期，页面操作条不能盖住它 */
+  z-index: 55;
   display: flex;
+  min-height: 58px;
   max-width: 520px;
   margin: 0 auto;
-  padding: 5px 10px calc(6px + env(safe-area-inset-bottom));
+  padding: 5px 10px 6px;
+  padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px));
+  /* 提升合成层：相邻的 .dock 带 backdrop-filter，个别安卓 WebView 会把
+     兄弟 fixed 层错误地画在它下面，看起来就是「导航栏消失」 */
+  transform: translate3d(0, 0, 0);
   border-top: 1px solid rgba(216, 169, 91, 0.16);
   background: rgba(11, 14, 21, 0.97);
   box-shadow: 0 -12px 26px rgba(0, 0, 0, 0.28);
@@ -357,4 +366,45 @@
   .game-nav-btn__label {
     font-size: 8.5px;
   }
+}
+
+/* ---------- 切格时的小动效：颜色、金线、图标一起过渡 ---------- */
+.game-nav-btn,
+.game-nav-btn__icon,
+.game-nav-btn__label {
+  transition:
+    color 0.2s ease,
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.game-nav-btn::before {
+  transition:
+    background-color 0.2s ease,
+    width 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.game-nav-btn--active::before {
+  width: 28px;
+}
+
+.game-nav-btn:active .game-nav-btn__icon {
+  transform: scale(0.9);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .game-nav-btn,
+  .game-nav-btn__icon,
+  .game-nav-btn__label,
+  .game-nav-btn::before {
+    transition: none !important;
+  }
+}
+
+html[data-motion='reduced'] .game-nav-btn,
+html[data-motion='reduced'] .game-nav-btn__icon,
+html[data-motion='reduced'] .game-nav-btn__label,
+html[data-motion='reduced'] .game-nav-btn::before {
+  transition: none !important;
 }

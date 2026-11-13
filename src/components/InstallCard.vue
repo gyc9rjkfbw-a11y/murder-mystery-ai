@@ -25,7 +25,7 @@ const steps = computed<string[]>(() => {
   if (isIosDevice.value) {
     return [
       '点浏览器底部的「分享」按钮（方框 + 向上箭头）',
-      '选「添加到主屏幕」，名字保持「迷案」',
+      '选「添加到主屏幕」，名字保持「谜案剧本杀」',
       '之后从桌面图标打开：全屏、没有地址栏',
     ]
   }
@@ -79,7 +79,7 @@ async function install() {
 
     <template v-else>
       <p class="card__hint" style="margin: 0 0 12px">
-        把「迷案」装到桌面：从图标打开就是全屏、没有地址栏，也不会误触刷新丢局。
+        把「谜案剧本杀」装到桌面：从图标打开就是全屏、没有地址栏，也不会误触刷新丢局。
       </p>
       <button v-if="isReady" class="btn btn--primary" :disabled="busy" @click="install">
         {{ busy ? '正在唤起安装…' : '添加到桌面' }}

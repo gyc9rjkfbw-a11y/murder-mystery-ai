@@ -1,8 +1,10 @@
-import type { ScriptPackage } from '@/types/script'
+import type { Difficulty, ScriptPackage } from '@/types/script'
+import { applyDifficultyToPackage, difficultyFor } from './difficulty'
 import { generateOfflineScript, type GenerateProgress } from './offlineEngine'
 import { pacingFor } from './rules'
 import { validateScriptPackage } from './validator'
 import { findDuplicateScript, type ScriptHistoryEntry } from './scriptHistory'
+import { findBalancedJson, stripCodeFence } from './modelJson'
 import {
   buildRoleScriptPrompt,
   buildStoryBiblePrompt,
@@ -11,6 +13,7 @@ import {
   parseRoleScriptResponse,
   ROLE_SCRIPT_SYSTEM_PROMPT,
   STORY_BIBLE_SYSTEM_PROMPT,
+  type RoleScriptResult,
 } from './stagedScript'
 
 /** 生成进度（透传给 UI，避免各处重复 import） */
@@ -28,7 +31,7 @@ export type { GenerateProgress }
  * 这是《核心系统架构设计》要求的「事实校验机制」入口。
  *
  * 线上引擎额外实现了 **字数自检 + 自动重写**：
- *   若 4 人局生成了 3000 字的剧本（超出 1500-1900 区间），系统不会直接放行，
+ *   若 4 人局生成了 3000 字的剧本（超出 1500-2200 区间），系统不会直接放行，
  *   而是把自检错误回灌给模型，要求它按目标字数重写一次。
  */
 
@@ -49,6 +52,8 @@ export interface AiConfig {
 export interface GenerateRequest {
   playerCount: number
   theme: string
+  /** 本局难度：写进提示词，并在返回前统一调整线索发放时序 */
+  difficulty?: Difficulty
   config: AiConfig
   uniqueness?: {
     nonce: string
@@ -85,15 +90,10 @@ interface RawCompletion {
   finishReason?: string
 }
 
-/** 剥掉模型可能多写的 markdown 代码块围栏 */
+/** 剥掉模型可能多写的 markdown 代码块围栏，并截出配平的 JSON 片段 */
 export function extractJSON(text: string): string {
-  let t = text.trim()
-  const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/m.exec(t)
-  if (fence) t = fence[1].trim()
-  const start = t.indexOf('{')
-  const end = t.lastIndexOf('}')
-  if (start >= 0 && end > start) t = t.slice(start, end + 1)
-  return t
+  const unfenced = stripCodeFence(text)
+  return findBalancedJson(unfenced) ?? unfenced
 }
 
 /** 把自检错误整理成给模型的「重写指令」 */
@@ -125,6 +125,22 @@ export function buildDuplicateRewriteInstruction(duplicateTheme: string): string
 4. 只输出完整 JSON。`
 }
 
+/**
+ * 上一次输出偏长/偏短时，给模型一份具体到数字的改法。
+ * 空字符串 = 不是字数问题，按原错误信息重写即可。
+ */
+function lengthAdvice(result: RoleScriptResult, playerCount: number): string {
+  const rule = pacingFor(playerCount)
+  const length = result.length ?? 0
+  if (length > rule.scriptMax) {
+    return `你上一次写了 ${length} 字，超出上限 ${rule.scriptMax} 字（多了 ${length - rule.scriptMax} 字）。请删掉重复的回忆、与主线无关的旁枝和过度铺陈的环境描写，把正文压到 ${rule.scriptMin}-${rule.scriptMax} 字，五幕结构与行为准则必须保留。`
+  }
+  if (length > 0 && length < rule.scriptMin) {
+    return `你上一次只写了 ${length} 字，比下限 ${rule.scriptMin} 字少 ${rule.scriptMin - length} 字。请补足具体场景、明确钟点与对话交锋，写到 ${rule.scriptMin}-${rule.scriptMax} 字。`
+  }
+  return ''
+}
+
 type StagedCaller = (
   req: GenerateRequest,
   system: string,
@@ -132,7 +148,7 @@ type StagedCaller = (
   maxTokens: number,
 ) => Promise<RawCompletion>
 
-async function callModel(
+export async function callModel(
   req: GenerateRequest,
   system: string,
   user: string,
@@ -154,7 +170,10 @@ async function callModel(
         temperature: config.temperature,
         max_tokens: maxTokens,
         stream: false,
-        response_format: { type: 'json_object' },
+        // 刻意不带 response_format: { type: 'json_object' }
+        // 部分兼容端点（含个别 OpenAI 代理）会校验「prompt 里必须出现 json」，
+        // 否则直接 400；而我们的主题、正文本来就允许是任意中文文本。
+        // JSON 结构由 system prompt 约束，返回后再做容错解析（见 modelJson.ts）。
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },
@@ -171,7 +190,13 @@ async function callModel(
 
   if (!res.ok) {
     const body = await res.text().catch(() => '')
-    throw new GenerationError(`大模型服务返回 ${res.status}`, [body.slice(0, 500)])
+    const detail = [body.slice(0, 500)]
+    if (/response_format|json_object/i.test(body)) {
+      detail.push(
+        '这个端点在要求「prompt 必须含 json」才允许 JSON 模式；本程序已不再发送 response_format，若仍看到此报错，请检查是否被代理改写。',
+      )
+    }
+    throw new GenerationError(`大模型服务返回 ${res.status}`, detail)
   }
 
   const json = (await res.json()) as {
@@ -204,6 +229,9 @@ export async function generateWithOpenAI(
   const warnings: string[] = []
   let rewrites = 0
   const maxTokens = maxOutputTokens(req)
+  // 模型偶尔会在写到一半时撞上单次输出上限（finish_reason=length）。
+  // 这时不直接判死，先按 1.5 倍上调重试，最多顶到 32768。
+  let tokenBudget = maxTokens
   const totalSteps = req.playerCount + 2
   const labels = [
     '生成全局真相与人物骨架',
@@ -212,29 +240,41 @@ export async function generateWithOpenAI(
   ]
   req.onProgress?.(progressPayload(1, totalSteps, labels, labels[0]))
 
-  let storyPrompt = buildStoryBiblePrompt(req.playerCount, req.theme, req.uniqueness
-    ? {
-        nonce: req.uniqueness.nonce,
-        avoid: req.uniqueness.history.map((item) => ({
-          theme: item.theme,
-          murderer: item.murderer,
-        })),
-      }
-    : undefined)
+  let storyPrompt = buildStoryBiblePrompt(
+    req.playerCount,
+    req.theme,
+    req.uniqueness
+      ? {
+          nonce: req.uniqueness.nonce,
+          avoid: req.uniqueness.history.map((item) => ({
+            theme: item.theme,
+            murderer: item.murderer,
+          })),
+        }
+      : undefined,
+    req.difficulty,
+  )
   let bible: ScriptPackage | null = null
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const raw = await caller(req, STORY_BIBLE_SYSTEM_PROMPT, storyPrompt, maxTokens)
+  const MAX_ATTEMPTS = 3
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    const raw = await caller(req, STORY_BIBLE_SYSTEM_PROMPT, storyPrompt, tokenBudget)
     if (raw.finishReason === 'length') {
+      const bumped = Math.min(32768, Math.round(tokenBudget * 1.5))
+      if (bumped > tokenBudget && attempt < MAX_ATTEMPTS - 1) {
+        warnings.push(`案件骨架输出被截断，已把单次输出上限提到 ${bumped} token 重试`)
+        tokenBudget = bumped
+        continue
+      }
       throw new GenerationError('案件骨架输出被截断', [
-        `模型达到单次 ${maxTokens} token 输出上限。`,
+        `模型达到单次 ${tokenBudget} token 输出上限。`,
         '请在设置中提高最大输出 Token，或换用支持更长输出的模型。',
       ])
     }
     const parsed = normalizeStoryBible(raw.content, req.playerCount)
     if (parsed.ok && parsed.pkg) {
       const duplicate = findDuplicateScript(parsed.pkg, req.uniqueness?.history ?? [])
-      if (duplicate && attempt === 0) {
+      if (duplicate && attempt < MAX_ATTEMPTS - 1) {
         rewrites += 1
         warnings.push(`案件骨架与最近对局「${duplicate.theme}」重复，已重新设计`)
         storyPrompt += `\n\n${buildDuplicateRewriteInstruction(duplicate.theme)}\n当前阶段只重新输出案件骨架，所有 full_script 仍必须为空。`
@@ -249,10 +289,10 @@ export async function generateWithOpenAI(
       bible = parsed.pkg
       break
     }
-    if (attempt === 0) {
+    if (attempt < MAX_ATTEMPTS - 1) {
       rewrites += 1
-      warnings.push('案件骨架未通过校验，已自动重写一次')
-      storyPrompt += `\n\n【上一次案件骨架校验失败】\n${parsed.errors.join('\n')}\n请修正后重新输出完整 JSON。`
+      warnings.push('案件骨架未通过校验，已自动重写')
+      storyPrompt += `\n\n【上一次案件骨架校验失败】\n${parsed.errors.join('\n')}\n只修正这些字段，其余事实保持不变，重新输出完整 JSON。`
       continue
     }
     throw new GenerationError('案件骨架生成失败', parsed.errors)
@@ -260,6 +300,7 @@ export async function generateWithOpenAI(
 
   if (!bible) throw new GenerationError('案件骨架生成失败')
   let assembled = bible
+  const rule = pacingFor(req.playerCount)
 
   for (let index = 0; index < assembled.roles.length; index += 1) {
     const role = assembled.roles[index]
@@ -269,24 +310,38 @@ export async function generateWithOpenAI(
     let rolePrompt = buildRoleScriptPrompt(bible, role.name, req.playerCount)
     let generated = false
 
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const raw = await caller(req, ROLE_SCRIPT_SYSTEM_PROMPT, rolePrompt, maxTokens)
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+      const raw = await caller(req, ROLE_SCRIPT_SYSTEM_PROMPT, rolePrompt, tokenBudget)
       if (raw.finishReason === 'length') {
+        const bumped = Math.min(32768, Math.round(tokenBudget * 1.5))
+        if (bumped > tokenBudget && attempt < MAX_ATTEMPTS - 1) {
+          warnings.push(`${role.name} 的输出被截断，已把单次输出上限提到 ${bumped} token 重试`)
+          tokenBudget = bumped
+          continue
+        }
         throw new GenerationError(`${role.name} 的剧本输出被截断`, [
-          `模型达到单次 ${maxTokens} token 输出上限。`,
+          `模型达到单次 ${tokenBudget} token 输出上限。`,
           '请在设置中提高最大输出 Token；角色剧本已拆分生成，不应再出现整桌内容截断。',
         ])
       }
       const parsed = parseRoleScriptResponse(raw.content, req.playerCount)
       if (parsed.ok && parsed.full_script) {
+        if (parsed.trimmed) {
+          warnings.push(
+            `${role.name} 的正文 ${parsed.originalLength ?? parsed.length} 字，超出 ${rule.scriptMax} 字上限，已压缩到 ${parsed.length} 字`,
+          )
+        }
         assembled = mergeRoleScript(assembled, role.name, parsed.full_script)
         generated = true
         break
       }
-      if (attempt === 0) {
+      if (attempt < MAX_ATTEMPTS - 1) {
         rewrites += 1
         warnings.push(`${role.name} 的剧本未达标，已要求单独重写`)
-        rolePrompt += `\n\n【上一次角色正文不合格】\n${parsed.errors.join('\n')}\n必须重新写完整角色正文，不要解释。`
+        const advice = lengthAdvice(parsed, req.playerCount)
+        rolePrompt += `\n\n【上一次角色正文不合格】\n${parsed.errors.join('\n')}${
+          advice ? `\n${advice}` : ''
+        }\n请重新输出完整角色正文，保持五幕结构与行为准则，不要解释。`
         continue
       }
       throw new GenerationError(`${role.name} 的剧本生成失败`, parsed.errors)
@@ -300,10 +355,12 @@ export async function generateWithOpenAI(
   if (!finalCheck.ok || !finalCheck.data) {
     throw new GenerationError('完整剧本未通过最终校验', finalCheck.errors)
   }
+  // 难度最后统一落地：模型不一定照口径写，批次时序由系统保证
+  const pkg = applyDifficultyToPackage(finalCheck.data, req.difficulty)
   return {
-    pkg: finalCheck.data,
+    pkg,
     provider: 'openai',
-    raw: JSON.stringify(finalCheck.data),
+    raw: JSON.stringify(pkg),
     rewrites,
     warnings,
   }
@@ -314,6 +371,8 @@ export async function generateWithOffline(req: GenerateRequest): Promise<Generat
   const pkg = await generateOfflineScript({
     playerCount: req.playerCount,
     theme: req.theme,
+    // 离线引擎内部已按难度调整过线索时序，这里不要再 apply 一次（会重复搬移）
+    difficulty: difficultyFor(req.difficulty).id,
     stepDelay: req.offlineStepDelayMs,
     onProgress: req.onProgress,
   })
@@ -322,14 +381,19 @@ export async function generateWithOffline(req: GenerateRequest): Promise<Generat
     // 内置库自身不合法属于开发期问题，直接抛出便于发现
     throw new GenerationError('内置剧本库未通过校验', check.errors)
   }
+  /**
+   * 离线引擎只有两套内置模板，六个题材都映射到它们身上；角色姓名每局都会重抽。
+   * 若命中最近记录就拒绝，玩家玩完一局后再开同人数局必然「生成失败」，
+   * 而「改用离线引擎」按钮在离线模式下什么也做不了，等于把人卡在下发页。
+   * 所以离线重复只给提示、不阻断；真实大模型的重复仍照常拒绝（见上方）。
+   */
   const duplicate = findDuplicateScript(check.data, req.uniqueness?.history ?? [])
-  if (duplicate) {
-    throw new GenerationError('内置剧本与最近对局重复', [
-      `离线引擎的内置案件「${duplicate.theme}」最近已经玩过。`,
-      '离线引擎使用有限内置模板，无法保证无限不重复；请换一个完全不同的题材，或使用真实大模型生成全新案件。',
-    ])
-  }
-  return { pkg: check.data, provider: 'offline', rewrites: 0, warnings: [] }
+  const warnings = duplicate
+    ? [
+        `内置案件「${duplicate.theme}」与最近对局同源，本局角色与线索已全部换新姓名。想要全新剧情可换题材，或使用真实大模型生成。`,
+      ]
+    : []
+  return { pkg: check.data, provider: 'offline', rewrites: 0, warnings }
 }
 
 /** 统一入口 */

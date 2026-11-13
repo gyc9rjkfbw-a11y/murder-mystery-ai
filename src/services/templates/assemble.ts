@@ -78,6 +78,79 @@ export function assembleScript(fullScript: string, min: number, max: number): st
   return [...picked, rulesText].filter(Boolean).join('\n\n')
 }
 
+/**
+ * 换名之后复核字数（必须在 `renameRoles` 之后调用）
+ * ------------------------------------------------------------------
+ * 拼装是按「原姓名」算的字数，而每局开出的角色姓名是随机换上的：
+ * 新姓名只要比旧姓名长一点，正文就会被推过该人数的上限
+ * （4 人 1900 / 5 人 2400 / 6 人 2800），下发页会直接判「字数不合规」。
+ * 这里按同一套预算再收一次：只删整段、行为准则原样保留，
+ * 单段本身就超预算时才按句号截断，保证一定落在上限内。
+ */
+export function fitRolesToPacing(pkg: ScriptPackage, playerCount: number): ScriptPackage {
+  const n = Math.min(6, Math.max(4, Math.floor(Number(playerCount) || 6)))
+  const rule = pacingFor(n)
+  return {
+    ...pkg,
+    roles: pkg.roles.map((role) => {
+      if (scriptLength(role.full_script) <= rule.scriptMax) return role
+      return {
+        ...role,
+        full_script: shrinkScript(role.full_script, rule.scriptMin, rule.scriptMax),
+      }
+    }),
+  }
+}
+
+/** 把正文压到上限以内（供换名复核与 AI 生成共用）：只删整段/截句，行为准则原样保留 */
+export function shrinkScriptToMax(text: string, max: number): string {
+  return shrinkScript(text, 0, max)
+}
+
+/** 把正文压到上限以内：先按段落重拼，仍超标再整段丢弃，最后才截句 */
+function shrinkScript(text: string, min: number, max: number): string {
+  const reassembled = assembleScript(text, min, max)
+  if (scriptLength(reassembled) <= max) return reassembled
+
+  const paragraphs = reassembled
+    .split(/\n+/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+  const body = paragraphs.filter((p) => !isRuleParagraph(p))
+  const rulesText = paragraphs.filter(isRuleParagraph).join('\n')
+  const budget = Math.max(0, max - scriptLength(rulesText))
+
+  const kept: string[] = []
+  let used = 0
+  for (const p of body) {
+    const len = scriptLength(p)
+    if (used + len > budget) break
+    kept.push(p)
+    used += len
+  }
+
+  // 一段都放不下：说明首段就超预算，按句号截到预算内
+  if (kept.length === 0 && body.length > 0) {
+    let head = ''
+    // 不用后行断言，老版本 iOS Safari 不支持
+    const sentences = body[0].match(/[^。！？]*[。！？]?/g)?.filter(Boolean) ?? []
+    for (const sentence of sentences) {
+      if (scriptLength(head + sentence) > budget) break
+      head += sentence
+    }
+    // 整段没有任何句号（模型偶尔会吐一整块），按字符硬切，别交白卷
+    if (!head) {
+      for (const ch of Array.from(body[0])) {
+        if (scriptLength(head + ch) > budget) break
+        head += ch
+      }
+    }
+    if (head) kept.push(head)
+  }
+
+  return [...kept, rulesText].filter(Boolean).join('\n\n')
+}
+
 /** 模板原始素材：由各题材文件提供，不含人数差异 */
 export interface TemplateSource {
   theme: string

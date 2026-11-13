@@ -2,11 +2,11 @@
 /**
  * 把整个游戏打包成一个「双击就能玩」的桌面 App 文件夹。
  * ==================================================================
- * 产出（默认 `%USERPROFILE%\Desktop\迷案`）：
+ * 产出（默认 `%USERPROFILE%\Desktop\谜案剧本杀`）：
  *
- *   迷案/
- *   ├── 迷案.vbs            ← 双击这个（无黑窗）
- *   ├── 迷案.cmd            ← 同一件事，带控制台，出问题时用它看输出
+ *   谜案剧本杀/
+ *   ├── 谜案剧本杀.vbs            ← 双击这个（无黑窗）
+ *   ├── 谜案剧本杀.cmd            ← 同一件事，带控制台，出问题时用它看输出
  *   ├── launcher.mjs        # 选端口 / 起服务器 / 开独立窗口 / 关窗即退
  *   ├── server.mjs          # 房间服务器单文件（ws 已内联，零依赖）
  *   ├── package.json        # 只为让服务器把「本文件夹」认作根目录
@@ -16,11 +16,11 @@
  *   └── 使用说明.txt
  *
  * 用法：
- *   node scripts/make-app.mjs                  # 打包到 桌面\迷案
+ *   node scripts/make-app.mjs                  # 打包到 桌面\谜案剧本杀
  *   node scripts/make-app.mjs --out=D:\ghost   # 换个位置
  *   node scripts/make-app.mjs --no-shortcut    # 不建桌面快捷方式
  *
- * 注意：重复打包**不会**动 `迷案/server/data/`（玩家的档案与战绩）和 `迷案/profile/`。
+ * 注意：重复打包**不会**动 `谜案剧本杀/server/data/`（玩家的档案与战绩）和 `谜案剧本杀/profile/`。
  */
 
 import { spawnSync } from 'node:child_process'
@@ -37,7 +37,7 @@ const argOf = (name) => {
 }
 const hasFlag = (name) => process.argv.slice(2).includes(`--${name}`)
 
-const OUT = path.resolve(argOf('out') || path.join(os.homedir(), 'Desktop', '迷案'))
+const OUT = path.resolve(argOf('out') || path.join(os.homedir(), 'Desktop', '谜案剧本杀'))
 const ICON_SRC = path.join(ROOT, 'scripts', 'app', 'icons')
 const NODE_BIN = process.execPath
 
@@ -112,7 +112,7 @@ function buildIco(target) {
   const pngs = []
   for (const s of sizes) {
     const p = path.join(ICON_SRC, `ico-${s}.png`)
-    if (!fs.existsSync(p)) throw new Error(`缺少图标 ${p}，先跑：node scripts/make-icons.ps1 的 ICO 部分`)
+    if (!fs.existsSync(p)) throw new Error(`缺少图标 ${p}，先跑：pnpm icons（scripts/make-icons.mjs）`)
     pngs.push({ size: s, data: fs.readFileSync(p) })
   }
 
@@ -161,10 +161,10 @@ sh.Run """" & root & "\\runtime\\node.exe"" """ & root & "\\launcher.mjs""", 0, 
 `
 
 const CMD = `@echo off
-rem 迷案 · AI 剧本杀 —— 带控制台的启动方式（排查问题用这个）
+rem 谜案剧本杀 —— 带控制台的启动方式（排查问题用这个）
 chcp 65001 >nul
 cd /d "%~dp0"
-title 迷案 · AI 剧本杀
+title 谜案剧本杀
 echo 正在启动，游戏窗口马上打开……
 echo （关掉游戏窗口 = 退出；这里的窗口可以最小化，别关）
 echo.
@@ -176,11 +176,11 @@ if errorlevel 1 (
 )
 `
 
-const README_TXT = `迷案 · AI 剧本杀 —— 桌面版
+const README_TXT = `谜案剧本杀 —— 桌面版
 =====================================
 
 【怎么玩】
-  双击「迷案.vbs」。
+  双击「谜案剧本杀.vbs」。
   会弹出一个没有地址栏的独立窗口，那就是游戏。
   想和朋友连同一局：在游戏里点「创建联机房间」，把 5 位房号念给他们。
   朋友跟你在同一个 Wi-Fi 下，让他们用浏览器打开：
@@ -196,13 +196,13 @@ const README_TXT = `迷案 · AI 剧本杀 —— 桌面版
   功能与全屏体验不受影响（没有地址栏、没有标签栏）。
 
 【数据放在哪】
-  迷案\\server\\data\\profiles.json     玩家档案、昵称头像、战绩、对局历史
-  迷案\\profile\\                       这个 App 专属的浏览器配置（登录态、本地缓存）
-  迷案\\logs\\server.log                服务器日志（连不上、起不来时看这个）
+  谜案剧本杀\\server\\data\\players.db      玩家档案、昵称头像、战绩、对局历史
+  谜案剧本杀\\profile\\                       这个 App 专属的浏览器配置（登录态、本地缓存）
+  谜案剧本杀\\logs\\server.log                服务器日志（连不上、起不来时看这个）
   删掉整个文件夹 = 全部清空，没有任何残留（不写注册表、不装服务）。
 
 【打不开怎么办】
-  1. 先双击「迷案.cmd」，它会留下日志并停住，把报错内容发出来；
+  1. 先双击「谜案剧本杀.cmd」，它会留下日志并停住，把报错内容发出来；
   2. 报「端口被占用」：说明已经有一份在跑，或者别的程序占了 5274。
      关掉旧窗口，或用命令行换端口：
          runtime\\node.exe launcher.mjs --port=5290
@@ -212,8 +212,8 @@ const README_TXT = `迷案 · AI 剧本杀 —— 桌面版
 
 【这个文件夹能拷给别人吗】
   能。整个文件夹拷过去（包括 runtime\\node.exe），对方的电脑不用装 Node、
-  不用装任何东西，双击「迷案.vbs」就能玩。
-  想分享战绩：连 server\\data\\profiles.json 一起拷。
+  不用装任何东西，双击「谜案剧本杀.vbs」就能玩。
+  想分享战绩：连 server\\data\\players.db 一起拷。
 
 【想装到手机桌面】
   手机浏览器打开同一个地址，按「添加到主屏幕」，从图标进就是全屏。
@@ -227,16 +227,16 @@ function psQuote(s) {
 
 /** 用 PowerShell 建桌面快捷方式（-EncodedCommand 传中文不会乱码） */
 function makeShortcut(appDir) {
-  const linkPath = path.join(os.homedir(), 'Desktop', '迷案.lnk')
+  const linkPath = path.join(os.homedir(), 'Desktop', '谜案剧本杀.lnk')
   if (fs.existsSync(linkPath) && hasFlag('no-shortcut')) return null
   const ps = [
     '$ws = New-Object -ComObject WScript.Shell',
     `$lnk = $ws.CreateShortcut(${psQuote(linkPath)})`,
     `$lnk.TargetPath = ${psQuote(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'wscript.exe'))}`,
-    `$lnk.Arguments = ${psQuote('"' + path.join(appDir, '迷案.vbs') + '"')}`,
+    `$lnk.Arguments = ${psQuote('"' + path.join(appDir, '谜案剧本杀.vbs') + '"')}`,
     `$lnk.WorkingDirectory = ${psQuote(appDir)}`,
     `$lnk.IconLocation = ${psQuote(path.join(appDir, '图标.ico') + ',0')}`,
-    `$lnk.Description = '迷案 · AI 剧本杀'`,
+    `$lnk.Description = '谜案剧本杀'`,
     '$lnk.Save()',
   ].join('\n')
   const encoded = Buffer.from(ps, 'utf16le').toString('base64')
@@ -282,8 +282,8 @@ async function main() {
 
   say('④ 图标与启动脚本 …')
   buildIco(path.join(OUT, '图标.ico'))
-  fs.writeFileSync(path.join(OUT, '迷案.vbs'), VBS, 'utf8')
-  fs.writeFileSync(path.join(OUT, '迷案.cmd'), CMD.replace(/\n/g, '\r\n'), 'utf8')
+  fs.writeFileSync(path.join(OUT, '谜案剧本杀.vbs'), VBS, 'utf8')
+  fs.writeFileSync(path.join(OUT, '谜案剧本杀.cmd'), CMD.replace(/\n/g, '\r\n'), 'utf8')
   fs.writeFileSync(path.join(OUT, '使用说明.txt'), '\ufeff' + README_TXT.replace(/\n/g, '\r\n'), 'utf8')
 
   // 桌面快捷方式
@@ -308,7 +308,7 @@ async function main() {
 
   say(`\n✅ 完成：${OUT}`)
   say(`   体积 ${mb(bytes)}（其中 runtime/node.exe ${mb(nodeSize)}）`)
-  say('   双击「迷案.vbs」即可；或点桌面上的「迷案」图标。')
+  say('   双击「谜案剧本杀.vbs」即可；或点桌面上的「谜案」图标。')
 }
 
 main().catch((e) => {

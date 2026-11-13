@@ -4,15 +4,18 @@ import { useRouter } from 'vue-router'
 import AppTopBar from '@/components/AppTopBar.vue'
 import CountdownPill from '@/components/CountdownPill.vue'
 import PhaseStepper from '@/components/PhaseStepper.vue'
+import RoleAvatar from '@/components/RoleAvatar.vue'
 import { useToast } from '@/composables/useToast'
 import { readingTimeText } from '@/services/rules'
 import { buildStoryActs } from '@/services/storyActs'
 import { scriptLength } from '@/services/templates/assemble'
 import { useGameStore } from '@/stores/game'
+import { useNetStore } from '@/stores/net'
 import { useSettingsStore } from '@/stores/settings'
 
 const router = useRouter()
 const game = useGameStore()
+const net = useNetStore()
 const settings = useSettingsStore()
 const toast = useToast()
 
@@ -131,7 +134,21 @@ const longScript = computed(() => wordCount.value > 1200)
 const sideQuests = computed(() => role.value?.side_quests ?? [])
 
 const readDone = computed(() => game.selfSeat?.readConfirmed === true)
-const allRead = computed(() => game.allRead)
+
+/**
+ * 还没读完的人。
+ * 和服务器同一判据：AI 开局就算读完，掉线的人不挡整桌
+ * （`alive` 在联机视图里就是「还连着」，见 stores/game.ts#applyServerView）。
+ */
+const pendingReaders = computed(() =>
+  game.state.seats.filter((s) => !s.isBot && s.alive && !s.readConfirmed),
+)
+const allRead = computed(() => pendingReaders.value.length === 0)
+const pendingNames = computed(() => pendingReaders.value.map((s) => s.name).join('、'))
+/** 联机只有房主能推进；离线（单人演示）自己就是房主 */
+const canStartStatement = computed(
+  () => readDone.value && allRead.value && (!game.state.online || net.isHost),
+)
 
 onMounted(() => {
   if (!game.state.script) router.replace('/')
@@ -221,6 +238,12 @@ function switchRole(index: number) {
     <p v-if="game.state.godMode" class="section-title">
       上帝视角（演示）· 可切换任意角色，🩸 标记的是真凶
     </p>
+    <!-- 阅读期间公屏和语音一直开着：不用等陈述，边读边问边对时间线 -->
+    <p v-if="net.inRoom" class="tiny muted reading-talk-hint">
+      阅读期间可以随时点右上角
+      <span class="reading-talk-hint__key">{{ net.inVoice ? '🎙' : '💬' }}</span>
+      开公屏或语音，和桌上的人对时间线（不耽误阅读计时）。
+    </p>
     <div v-if="game.state.godMode" class="stepper" style="padding: 0 0 6px; margin-bottom: 6px">
       <button
         v-for="(r, i) in game.roles"
@@ -287,7 +310,11 @@ function switchRole(index: number) {
 
     <section v-if="role" id="sec-role" class="card" :class="{ flash: flashId === 'sec-role' }">
       <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px">
-        <div style="font-size: 26px">🎭</div>
+        <RoleAvatar
+          :role="role"
+          :size="46"
+          :tone="role.is_murderer ? 'blood' : 'gold'"
+        />
         <div style="flex: 1; min-width: 0">
           <div style="font-size: 19px; font-weight: 700; letter-spacing: 0.06em">
             {{ role.name }}
@@ -447,7 +474,8 @@ function switchRole(index: number) {
       <div class="dock__info">
         <template v-if="readDone">
           已确认读完
-          <template v-if="allRead"> · 全部玩家就绪</template>
+          <template v-if="allRead"> · 全部玩家已读完</template>
+          <template v-else> · 还差 {{ pendingNames }}</template>
         </template>
         <template v-else>
           <template v-if="timelineOnly">时间线速览中 · 关闭后继续分幕阅读</template>
@@ -466,6 +494,11 @@ function switchRole(index: number) {
       </button>
       <button v-else-if="!readDone" class="btn btn--primary btn--sm" @click="confirmRead">
         我已读完
+      </button>
+      <!-- 阅读 → 陈述的闸门：所有人读完之前谁也不许往下走（服务器同样会拦） -->
+      <button v-else-if="!allRead" class="btn btn--ghost btn--sm" disabled>等待中</button>
+      <button v-else-if="!canStartStatement" class="btn btn--ghost btn--sm" disabled>
+        等房主开始陈述
       </button>
       <button v-else class="btn btn--primary btn--sm" @click="gotoStatement">
         进入第 1 轮陈述

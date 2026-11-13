@@ -25,7 +25,8 @@ export function isGameRoute(routeName: string | null | undefined): boolean {
 
 export function navTabForRoute(routeName: string | null | undefined): AppNavItem | null {
   if (routeName === 'home') return 'home'
-  if (routeName === 'settings') return 'mine'
+  // 「我的」与「游戏设置」都算第四格：设置是从我的里进去的子页面，底部不该跳格
+  if (routeName === 'me' || routeName === 'settings') return 'mine'
   if (isGameRoute(routeName)) return 'game'
   return null
 }

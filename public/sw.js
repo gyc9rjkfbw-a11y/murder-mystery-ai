@@ -14,7 +14,7 @@
  * 想强制换代：改下面的 VERSION，旧缓存会在 activate 时被清掉。
  */
 
-const VERSION = 'mmai-shell-v2'
+const VERSION = 'mmai-shell-v3'
 const SHELL = ['/', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png']
 
 self.addEventListener('install', (event) => {

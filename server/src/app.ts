@@ -23,13 +23,14 @@ import { fileURLToPath } from 'node:url'
 import type { AddressInfo } from 'node:net'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { NET_PORT, PROTOCOL_VERSION, type ClientMsg, type ServerMsg } from '@/services/net/protocol'
+import { difficultyFor, normalizeDifficulty } from '@/services/difficulty'
 import { PRESET_THEMES } from '@/services/templates'
 import { validateScriptPackage } from '@/services/validator'
 import { createApiHandler } from './api'
 import { createLogger } from './log'
 import { Room, sanitizeName, uniqueRoomCode } from './room'
 import { createRequestHandler, distEntry, staticAvailable } from './static'
-import { normalizePlayerId, ProfileStore, sanitizeAvatar } from './store'
+import { DB_FILE, normalizePlayerId, ProfileStore, sanitizeAvatar } from './store'
 import { loadTlsMaterial, materialToServerOptions, tlsFallbackWarning, tlsRequested, type TlsArgs } from './tls'
 import type { RoomSeat } from './types'
 
@@ -55,7 +56,7 @@ export interface StartServerOptions {
    */
   tls?: TlsArgs
   /**
-   * 玩家档案落盘目录（默认 <项目根>/server/data）。
+   * 玩家数据库目录（默认 <项目根>/server/data，库文件是 players.db）。
    * 传一个临时目录就能让测试之间互不污染。
    */
   dataDir?: string
@@ -71,7 +72,7 @@ export interface ServerHandle {
   /** TLS 配置失败时的中文警告；空字符串 = 没出问题 */
   tlsWarning: string
   rooms: Map<string, Room>
-  /** 玩家档案库（落盘在 dataDir/profiles.json） */
+  /** 玩家档案库（SQLite：dataDir/players.db） */
   profiles: ProfileStore
   server: http.Server | https.Server
   /** WebSocket 地址（https 下是 wss://） */
@@ -151,8 +152,9 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
   }
 
   const siteReady = staticAvailable(distDir)
-  // ---- 玩家档案库：纯 JSON 落盘，服务器重启后昵称/头像/战绩都还在 ----
-  const dataDir = options.dataDir ?? path.join(findProjectRoot(), 'server', 'data')
+  // ---- 玩家档案库：SQLite（players.db），重启后昵称/头像/战绩/对局历史都还在 ----
+  // 显式参数 > 环境变量 > 默认（`MMAI_DATA_DIR` 与 index.ts 的口径一致，测试也用它隔离）
+  const dataDir = options.dataDir ?? process.env.MMAI_DATA_DIR ?? path.join(findProjectRoot(), 'server', 'data')
   const profiles = new ProfileStore({
     dir: dataDir,
     maxProfiles: options.maxProfiles,
@@ -256,6 +258,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
             return
           }
           const theme = String(msg.theme ?? '').trim() || PRESET_THEMES[0].theme
+          // 没传难度就让 Room 自己决定：自定义剧本自带难度优先，否则标准档
+          const difficulty = msg.difficulty ? normalizeDifficulty(msg.difficulty) : undefined
           let customScript: import('@/types/script').ScriptPackage | null = null
           if (msg.script) {
             if (JSON.stringify(msg.script).length > 1_000_000) {
@@ -279,6 +283,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
             code,
             playerCount,
             theme,
+            difficulty,
             script: customScript,
             logger,
             phaseScale: options.phaseScale,
@@ -299,6 +304,12 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
                 `战绩入档：${rows.map((r) => `${r.name}（${r.isMurderer ? '凶手' : '平民'}·${r.win ? '胜' : '负'}）`).join('、')}`,
               )
             },
+            // 房主解散房间：房号立即作废，后续 join / rejoin 都会得到「房间不存在」
+            onDissolve: (dissolvedCode) => {
+              rooms.delete(dissolvedCode)
+              room.dispose()
+              if (!quiet) console.log(`[房间服务] 房间 ${dissolvedCode} 已被房主解散`)
+            },
           })
           rooms.set(code, room)
           const playerId = normalizePlayerId(msg.playerId)
@@ -314,7 +325,10 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
           contexts.set(socket, { code, seatId: seat.seatId })
           room.attachSocket(seat, socket)
           rememberPlayer(playerId, seat)
-          room.log(`建房：${seat.name} 创建了 ${playerCount} 人房间 ${code}（题材：${theme}）`)
+          room.log(
+            `建房：${seat.name} 创建了 ${playerCount} 人房间 ${code}` +
+              `（题材：${theme}，难度：${difficultyFor(room.difficulty).label}）`,
+          )
           send(socket, {
             t: 'welcome',
             seatId: seat.seatId,
@@ -476,7 +490,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
   if (!quiet) {
     const lines = [
       '======================================================',
-      '🕯️  AI 剧本杀 · 真联机房间服务器已启动',
+      '🕯️  谜案剧本杀 · 真联机房间服务器已启动',
       `    监听地址：${host}:${actualPort}（网页与 WebSocket 同一端口）`,
       `    本机打开：${scheme}://127.0.0.1:${actualPort}/`,
     ]
@@ -496,7 +510,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
     lines.push('    提示：房主建房后把 5 位房号告诉朋友，朋友在同一地址「加入房间」即可')
     const snapshot = profiles.statsSnapshot()
     lines.push(
-      `    📇 玩家档案：${dataDir}（${snapshot.profileCount} 份 · ${snapshot.fileBytes} 字节，重启后仍在）`,
+      `    📇 玩家数据库：${path.join(dataDir, DB_FILE)}（${snapshot.profileCount} 份 · ${snapshot.games} 条对局 · ${snapshot.fileBytes} 字节 · 完整性 ${snapshot.integrity.ok ? 'ok' : '异常'}）`,
     )
     lines.push('======================================================')
     console.log(lines.join('\n'))

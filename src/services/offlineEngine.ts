@@ -1,4 +1,5 @@
-import type { ScriptPackage } from '@/types/script'
+import type { Difficulty, ScriptPackage } from '@/types/script'
+import { applyDifficultyToPackage, difficultyFor } from './difficulty'
 import { pacingFor } from './rules'
 import { adaptTheme, pickTemplate } from './templates'
 
@@ -31,6 +32,8 @@ export interface GenerateProgress {
 export interface OfflineGenerateOptions {
   playerCount: number
   theme: string
+  /** 本局难度：只调整线索发放时序与文案，不改凶手与真相 */
+  difficulty?: Difficulty
   onProgress?: (p: GenerateProgress) => void
   /** 每步模拟耗时（毫秒），测试时可传 0 */
   stepDelay?: number
@@ -52,12 +55,16 @@ export const THREE_STEP_PIPELINE = GENERATION_PIPELINE
 export async function generateOfflineScript(
   options: OfflineGenerateOptions,
 ): Promise<ScriptPackage> {
-  const { playerCount, theme, onProgress, stepDelay = 800 } = options
+  const { playerCount, theme, difficulty, onProgress, stepDelay = 800 } = options
   const tpl = pickTemplate(theme)
   const rule = pacingFor(playerCount)
+  const diff = difficultyFor(difficulty)
 
   for (let i = 0; i < GENERATION_PIPELINE.length; i += 1) {
     let label: string = GENERATION_PIPELINE[i]
+    if (i === 0) {
+      label = `${label}（${diff.label}难度）`
+    }
     if (i === 2) {
       label = `${label}目标 ${rule.scriptMin}-${rule.scriptMax} 字/人`
     }
@@ -76,5 +83,6 @@ export async function generateOfflineScript(
     totalSteps: GENERATION_PIPELINE.length,
     label: '剧本已通过自检，正在分发到各端……',
   })
-  return pkg
+  // 线索时序最后压一次：轻松/硬核只搬批次位置，不动线索内容与真相
+  return applyDifficultyToPackage(pkg, diff.id)
 }

@@ -56,6 +56,8 @@ export interface PlayerProfile {
   stats: ProfileStats
   history: ProfileGameRecord[]
   ai: ProfileAi
+  /** 偏好题材（喜欢哪几类剧本）；老版本服务器没有这个字段，所以是可选的 */
+  genres?: string[]
 }
 
 /** 头像候选：先用房间那套「剧本杀氛围」的头像，再加几个 */
@@ -166,6 +168,8 @@ export interface PushProfileInput {
   name?: string
   avatar?: string
   ai?: { provider: string; model: string; baseUrl: string }
+  /** 偏好题材（「我的」页里选的那几个类型） */
+  genres?: string[]
 }
 
 export interface PushProfileResult {
@@ -183,6 +187,7 @@ export async function pushProfile(input: PushProfileInput): Promise<PushProfileR
       name: input.name,
       avatar: input.avatar,
       ai: input.ai ? { provider: input.ai.provider, model: input.ai.model, baseUrl: input.ai.baseUrl } : undefined,
+      genres: input.genres,
     }),
   })
   return data ? { ok: true, profile: data.profile, warnings: data.warnings } : { ok: false }
@@ -192,14 +197,24 @@ export async function pushProfile(input: PushProfileInput): Promise<PushProfileR
  * 去抖推送：设置页里改昵称 / 换头像时不要每敲一个字就打一次请求
  * ------------------------------------------------------------------ */
 
-let pending: PushProfileInput | null = null
+/**
+ * 去抖推送的载荷。
+ * 也可以传一个函数：**到点再取**一份最新的快照。
+ * 为什么要这样：昵称/头像一改就排队推送，而「偏好题材」是另一个字段；
+ * 如果排队时就把数组按引用抓下来，等真正发出去时可能已经是旧值（甚至是空数组），
+ * 服务器上的题材就被覆盖没了。函数形式保证发出去的一定是此刻的状态。
+ */
+export type PushProfilePatch = PushProfileInput | (() => PushProfileInput)
+
+let pending: PushProfilePatch | null = null
 let timer: ReturnType<typeof setTimeout> | null = null
 let inflight = false
 
 function flush(): void {
   if (!pending || inflight) return
-  const payload = pending
+  const patch = pending
   pending = null
+  const payload = typeof patch === 'function' ? patch() : patch
   inflight = true
   void pushProfile(payload)
     .then((result) => {
@@ -213,8 +228,8 @@ function flush(): void {
 }
 
 /** 排队推送（250ms 合并），服务器不在线就静默跳过 */
-export function saveProfileSoon(input: PushProfileInput): void {
-  pending = { ...(pending ?? {}), ...input }
+export function saveProfileSoon(patch: PushProfilePatch): void {
+  pending = patch
   if (timer) clearTimeout(timer)
   timer = setTimeout(() => {
     timer = null

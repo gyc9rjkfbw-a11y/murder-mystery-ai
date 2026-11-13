@@ -259,3 +259,28 @@
     font-size: 12.5px;
   }
 }
+/* ---------- 难度徽标（本局配置里的那一行） ---------- */
+.difficulty-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  margin-right: 5px;
+  border: 1px solid rgba(216, 169, 91, 0.32);
+  border-radius: 999px;
+  background: rgba(216, 169, 91, 0.08);
+  color: var(--gold);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+/* 复盘阶段停在等待厅：不用转圈，给两个能点的出口 */
+.lobby-ended-actions {
+  justify-content: center;
+  margin-top: 14px;
+}
+
+.lobby-ended-actions .btn {
+  min-width: 118px;
+}

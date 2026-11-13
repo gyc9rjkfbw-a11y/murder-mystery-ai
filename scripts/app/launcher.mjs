@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * 「迷案 · AI 剧本杀」桌面 App 启动器
+ * 「谜案剧本杀」桌面 App 启动器
  * ==================================================================
- * 双击「迷案.vbs」→ 本文件启动 → 它会：
+ * 双击「谜案剧本杀.vbs」→ 本文件启动 → 它会：
  *   1. 找一个空闲端口（默认从 5274 开始试），把自带的房间服务器拉起来；
  *   2. 用 Edge / Chrome 的「应用窗口」模式（--app，没有地址栏和标签栏）打开游戏，
  *      并使用本文件夹里的独立浏览器配置目录 → 这份数据只属于这个 App；
@@ -59,7 +59,7 @@ function fail(message) {
   }
   console.error(message)
   // App 没有控制台，错误要用系统消息框弹出来，否则用户只会看到「双击没反应」
-  if (!flag('no-dialog')) showDialog('迷案 · 启动失败', message)
+  if (!flag('no-dialog')) showDialog('谜案剧本杀 · 启动失败', message)
   process.exit(1)
 }
 
@@ -105,7 +105,7 @@ async function pickPort(want) {
   if (want) {
     if (await tryListen(want)) return want
     fail(
-      `端口 ${want} 被占用了（可能是另一个「迷案」还在运行，或别的程序占用）。\n` +
+      `端口 ${want} 被占用了（可能是另一个「谜案剧本杀」还在运行，或别的程序占用）。\n` +
         `关掉它再试，或者用命令行参数换个端口：\n  runtime\\node.exe launcher.mjs --port=5290`,
     )
   }
@@ -189,7 +189,7 @@ function findBrowser() {
  *   ① 全新的 Edge 配置第一次启动会弹「我们在你的所有设备上同步浏览数据」
  *      （`edge://sync-confirmation-dialog`），把窗口占住 → 必须带 `--disable-sync`。
  *
- *   ② **不能用 spawn 直接拉浏览器**：`迷案.vbs` 是用隐藏方式启动本进程的，
+ *   ② **不能用 spawn 直接拉浏览器**：`谜案剧本杀.vbs` 是用隐藏方式启动本进程的，
  *      Windows 把 `SW_HIDE` 一路继承给子进程，Chromium 会把「首次导航」推迟到
  *      窗口真正显示之后 —— 窗口建出来了，标题却一直是空的，页面永远白屏。
  *      改成：写一份临时 .vbs，让 wscript 用 `Run(..., 1, False)` 显式请求
@@ -215,7 +215,7 @@ function openWindow(browser, url) {
   const cmdline = [`"${browser}"`, ...args.map((a) => (a.includes(' ') ? `"${a}"` : a))].join(' ')
   const helper = path.join(LOGS, 'open-window.vbs')
   try {
-    // ★ 必须写成 UTF-16LE + BOM：App 的路径里带中文（桌面\迷案），
+    // ★ 必须写成 UTF-16LE + BOM：App 的路径里带中文（桌面\谜案剧本杀），
     //   用 ASCII/UTF-8 写会把中文写坏，Edge 会拿着一条坏路径去开配置目录。
     //   wscript 认得带 BOM 的 Unicode 脚本。
     const vbs = `Set sh = CreateObject("WScript.Shell")\r\nsh.Run "${cmdline.replace(/"/g, '""')}", 1, False\r\n`
@@ -440,7 +440,7 @@ async function main() {
   if (!winPid) {
     killTree(server)
     clearLock()
-    fail(`没能打开游戏窗口。\n\n你可以手动在浏览器里打开：${url}\n\n或者双击「迷案.cmd」，它会把详细日志留在屏幕上。`)
+    fail(`没能打开游戏窗口。\n\n你可以手动在浏览器里打开：${url}\n\n或者双击「谜案剧本杀.cmd」，它会把详细日志留在屏幕上。`)
   }
   await waitWindowClosed(winPid)
   shutdown(0)

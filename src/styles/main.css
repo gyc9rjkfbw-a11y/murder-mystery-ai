@@ -1,5 +1,5 @@
 /* ==========================================================================
-   迷案 · AI 剧本杀 —— 设计系统
+   谜案剧本杀 —— 设计系统
    移动端优先，深色悬疑风格：墨黑底 + 琥珀金 + 血色
    ========================================================================== */
 
@@ -975,6 +975,9 @@ body {
   gap: 8px;
 }
 .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   border: 1px solid var(--line-strong);
   border-radius: 999px;
   background: transparent;
@@ -1226,4 +1229,85 @@ body {
   border-radius: 12px;
   border: 1px dashed var(--line);
   background: rgba(255, 255, 255, 0.02);
+}
+
+/* ---- 复盘页：保留房间 / 解散房间 的二选一 ---- */
+.again-choice {
+  display: grid;
+  gap: 9px;
+  margin: 12px 0 0;
+}
+.again-option {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 12px 13px;
+  border: 1px solid rgba(216, 169, 91, 0.28);
+  border-radius: 12px;
+  background: rgba(216, 169, 91, 0.07);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+}
+.again-option:active {
+  transform: scale(0.988);
+}
+.again-option__icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  place-items: center;
+  border: 1px solid rgba(216, 169, 91, 0.4);
+  border-radius: 9px;
+  background: rgba(216, 169, 91, 0.12);
+  color: var(--gold);
+  font-size: 14px;
+}
+.again-option strong {
+  display: block;
+  font-size: 13.5px;
+  letter-spacing: 0.02em;
+}
+.again-option small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.again-option--danger {
+  border-color: rgba(212, 72, 58, 0.3);
+  background: rgba(212, 72, 58, 0.06);
+}
+.again-option--danger .again-option__icon {
+  border-color: rgba(212, 72, 58, 0.45);
+  background: rgba(212, 72, 58, 0.12);
+  color: #ff9c90;
+}
+.again-option--danger.again-option--armed {
+  border-color: rgba(255, 120, 105, 0.85);
+  background: rgba(212, 72, 58, 0.18);
+  box-shadow: 0 0 0 1px rgba(255, 120, 105, 0.28) inset;
+}
+.again-option--danger.again-option--armed small {
+  color: #f4c3bd;
+}
+
+/* ---------- 复盘底部：返回房间 / 离开房间 ---------- */
+.reveal-exit {
+  margin-top: 12px;
+}
+.reveal-exit .btn {
+  padding-inline: 12px;
+  font-size: 14.5px;
+  letter-spacing: 0.03em;
+}
+.reveal-exit__hint {
+  margin: 9px 0 0;
+  line-height: 1.75;
+  text-align: center;
 }

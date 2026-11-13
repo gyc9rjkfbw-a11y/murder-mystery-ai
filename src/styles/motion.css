@@ -10,26 +10,33 @@
   flex-direction: column;
 }
 
+/* 页面切换：旧页轻轻往上淡出，新页从下方浮上来并收一下模糊。
+   用 out-in 串行，两段加起来约 0.44s，比纯淡入更有「翻页」的方向感，
+   又不会因为重叠定位把长页面的滚动位置搞乱。 */
 .route-enter-active {
   transition:
-    opacity 0.22s ease,
-    transform 0.22s cubic-bezier(0.22, 0.8, 0.24, 1);
+    opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.34s cubic-bezier(0.16, 1, 0.3, 1),
+    filter 0.28s ease;
 }
 
 .route-leave-active {
   transition:
-    opacity 0.11s ease,
-    transform 0.11s ease;
+    opacity 0.14s ease,
+    transform 0.18s cubic-bezier(0.4, 0, 1, 1),
+    filter 0.14s ease;
 }
 
 .route-enter-from {
   opacity: 0;
-  transform: translateY(7px);
+  transform: translate3d(0, 12px, 0) scale(0.992);
+  filter: blur(6px);
 }
 
 .route-leave-to {
   opacity: 0;
-  transform: translateY(-3px);
+  transform: translate3d(0, -8px, 0) scale(0.998);
+  filter: blur(4px);
 }
 
 /* ---------- Brand mark ---------- */
@@ -248,10 +255,11 @@
   margin: 1px 0 0;
   color: #f1dfc3;
   font-family: var(--serif);
-  font-size: 40px;
+  /* 六个字一行放得下：字距收紧 + 窄屏缩字号 */
+  font-size: clamp(26px, 7vw, 38px);
   font-weight: 700;
-  letter-spacing: 0.24em;
-  text-indent: 0.24em;
+  letter-spacing: 0.12em;
+  text-indent: 0.12em;
   text-shadow: 0 8px 28px rgba(216, 169, 91, 0.16);
   animation: launchTitle 0.6s cubic-bezier(0.16, 0.9, 0.24, 1) 0.48s both;
 }
@@ -744,7 +752,7 @@
   }
 
   .launch-intro__title {
-    font-size: 35px;
+    font-size: 25px;
   }
 }
 

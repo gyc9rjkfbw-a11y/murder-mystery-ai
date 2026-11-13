@@ -7,6 +7,9 @@
  * 校验后才能进入游戏状态机。
  */
 
+/** 游戏难度：只影响节奏与线索发放时序，不改凶手与真相 */
+export type Difficulty = 'easy' | 'normal' | 'hard'
+
 /** game_config：全局配置 */
 export interface GameConfig {
   /** 题材名称 */
@@ -15,6 +18,17 @@ export interface GameConfig {
   player_count: number
   /** 200 字以内的故事背景，交代时代、场景和死者信息 */
   background_story: string
+  /**
+   * 扩展：本局难度（见 src/services/difficulty.ts）。
+   * 老剧本 / 老服务端不带这个字段时按「标准」处理。
+   */
+  difficulty?: Difficulty
+  /**
+   * 扩展：内置模板的稳定标识。
+   * 角色姓名每局都会轮换，防重复指纹需要靠它识别「同一个内置案件」，
+   * 否则改个名字就会被当成全新剧本。
+   */
+  case_id?: string
 }
 
 /** global_truth：全局真相，仅系统（与复盘环节）可见 */
@@ -27,10 +41,19 @@ export interface GlobalTruth {
   absolute_timeline: string
 }
 
+/** 角色性别：只用于渲染专属头像，不影响玩法与胜负判定 */
+export type Gender = 'male' | 'female'
+
 /** roles[]：单个角色 */
 export interface Role {
   /** 角色姓名 */
   name: string
+  /**
+   * 角色性别（扩展字段）。
+   * 内置模板全部显式标注；AI 生成时由提示词要求输出，
+   * 万一缺省则按姓名 + 身份文本推断（见 services/roleAvatar.ts）。
+   */
+  gender?: Gender
   /** 角色身份 */
   identity: string
   /** 是否为凶手 */
@@ -44,7 +67,7 @@ export interface Role {
   /**
    * 完整沉浸式剧本。
    * 字数由 `player_count` 决定（见 src/services/rules.ts）：
-   * 4 人 1500-1900 / 5 人 1900-2400 / 6 人 2300-2800（非空白字符）。
+   * 4 人 1500-2200 / 5 人 1900-2900 / 6 人 2300-3300（非空白字符）。
    */
   full_script: string
   /**

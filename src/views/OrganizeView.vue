@@ -5,6 +5,7 @@ import AppTopBar from '@/components/AppTopBar.vue'
 import ClueCard from '@/components/ClueCard.vue'
 import CountdownPill from '@/components/CountdownPill.vue'
 import PhaseStepper from '@/components/PhaseStepper.vue'
+import RoleAvatar from '@/components/RoleAvatar.vue'
 import SheetModal from '@/components/SheetModal.vue'
 import { CASE_REASONS, useDeductionStore } from '@/stores/deduction'
 import { useGameStore } from '@/stores/game'
@@ -315,6 +316,7 @@ function gotVoting() {
           :class="{ 'wb-suspect--final': deduction.board.finalSuspect === role.name }"
         >
           <div class="wb-suspect__head">
+            <RoleAvatar :role="role" :size="42" tone="none" />
             <div class="wb-suspect__identity">
               <strong>{{ role.name }}</strong>
               <span>{{ role.identity }}</span>

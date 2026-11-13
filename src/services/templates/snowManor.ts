@@ -24,6 +24,7 @@ import { buildScriptPackage, type TemplateSource } from './assemble'
 const ALL_ROLES: Role[] = [
   {
     name: '沈知雪',
+    gender: 'female',
     identity: '山庄滑雪教练（前国家青年队队员，真实身份是两年前遇难巡逻队员沈知野的姐姐）',
     is_murderer: true,
     surface_task:
@@ -67,6 +68,7 @@ const ALL_ROLES: Role[] = [
   },
   {
     name: '裴慎',
+    gender: 'male',
     identity: '山庄管家（死者裴雪峰的远房侄子，替他管了十一年钥匙与账本）',
     is_murderer: false,
     surface_task:
@@ -108,6 +110,7 @@ const ALL_ROLES: Role[] = [
   },
   {
     name: '陆行',
+    gender: 'male',
     identity: '山庄安保主管兼监控室值班员（两年前雪崩中遇难巡逻队员的队友）',
     is_murderer: false,
     surface_task:
@@ -146,6 +149,7 @@ const ALL_ROLES: Role[] = [
   },
   {
     name: '顾清和',
+    gender: 'male',
     identity: '山庄私人医生兼酒窖管理员（死者常年雇佣的随身医师）',
     is_murderer: false,
     surface_task:
@@ -186,6 +190,7 @@ const ALL_ROLES: Role[] = [
   },
   {
     name: '苏未晞',
+    gender: 'female',
     identity: '财经记者（以采访「雪山度假经济」为名入庄，真实目标是裴氏文旅的挪用账目）',
     is_murderer: false,
     surface_task:
@@ -225,6 +230,7 @@ const ALL_ROLES: Role[] = [
   },
   {
     name: '宋砚',
+    gender: 'male',
     identity: '裴氏文旅第二大股东、死者二十二年的合伙人（名义上的「老朋友」，实际被架空的董事）',
     is_murderer: false,
     surface_task:

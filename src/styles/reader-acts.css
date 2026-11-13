@@ -206,3 +206,14 @@
     transition: none !important;
   }
 }
+
+/* 阅读页：公屏 / 语音的提示条（阅读期间就能用，不用等陈述） */
+.reading-talk-hint {
+  margin: 0 0 10px;
+  line-height: 1.7;
+}
+
+.reading-talk-hint__key {
+  color: var(--gold);
+  font-weight: 600;
+}

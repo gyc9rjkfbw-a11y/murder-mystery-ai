@@ -33,7 +33,7 @@ import path from 'node:path'
 import type { AddressInfo } from 'node:net'
 import { startServer, type ServerHandle } from '../src/app'
 import { createApiHandler } from '../src/api'
-import { PROFILE_LIMITS, ProfileStore } from '../src/store'
+import { DB_BACKUP, DB_FILE, PROFILE_FILE, PROFILE_LIMITS, ProfileStore } from '../src/store'
 import {
   CHAT_HISTORY,
   CHAT_MIN_INTERVAL_MS,
@@ -45,6 +45,7 @@ import {
   type VoiceSignal,
 } from '@/services/net/protocol'
 import { pacingFor } from '@/services/rules'
+import { pacingForDifficulty } from '@/services/difficulty'
 import { buildScriptPackage } from '../src/script'
 import { Room, sanitizeChatText, sanitizeVoiceSignal, truncateChatText } from '../src/room'
 import { censorSeat } from '../src/censor'
@@ -52,6 +53,10 @@ import { loadTlsMaterial, parseTlsArgs, tlsFallbackWarning, tlsRequested } from 
 import type { ScriptPackage } from '@/types/script'
 
 const THEME = '民国·远洋邮轮谋杀案'
+
+// 联机测试要逐帧比对「原始剧本」与下发视图；角色名每局随机会让这些
+// 断言拿到两份不同的姓名。这里固定用模板姓名，随机化本身由 unit 自检覆盖。
+process.env.MMAI_FIXED_ROLE_NAMES = '1'
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
@@ -237,10 +242,18 @@ async function createRoom(
   playerCount: number,
   theme = THEME,
   humans = playerCount,
+  difficulty?: 'easy' | 'normal' | 'hard',
 ): Promise<{ host: TestClient; clients: TestClient[]; code: string }> {
   const host = new TestClient('房主')
   await host.connect(url)
-  host.send({ t: 'create', name: host.name, playerCount, theme, proto: PROTOCOL_VERSION })
+  host.send({
+    t: 'create',
+    name: host.name,
+    playerCount,
+    theme,
+    proto: PROTOCOL_VERSION,
+    ...(difficulty ? { difficulty } : {}),
+  })
   await waitUntil(() => host.hasView, '房主收到 welcome + view')
   const clients = [host]
   for (let i = 1; i < humans; i += 1) {
@@ -261,6 +274,10 @@ async function startGame(host: TestClient, clients: TestClient[]): Promise<void>
   host.send({ t: 'start' })
   await waitUntil(() => host.view.started && host.view.phase === 'reading', '进入阅读阶段', 15000)
   await waitUntil(() => clients.every((c) => c.view.phase === 'reading'), '所有人进入阅读')
+  // 阅读 → 陈述的闸门是「所有人都点了我已读完」（见 2b 节）。
+  // 这里替所有真人点一遍，后面的用例就能像以前一样直接推进。
+  clients.forEach((c) => c.send({ t: 'ready', ready: true }))
+  await waitUntil(() => clients.every((c) => c.view.seats.every((s) => s.isBot || s.ready)), '全员读完剧本')
 }
 
 /** 让所有真人客户端按服务器指定的顺序各发一次言，返回发言顺序（seatId 序列） */
@@ -615,7 +632,7 @@ async function testFullFlow(url: string): Promise<void> {
   )
   const rule = pacingFor(4)
 
-  check('4 人局 = 2 轮 / 无搜证 / 阅读 10 分钟', rule.maxRounds === 2 && rule.searchRounds === 0 && rule.readingSeconds === 600)
+  check('4 人局 = 2 轮 / 无搜证 / 阅读 12 分钟', rule.maxRounds === 2 && rule.searchRounds === 0 && rule.readingSeconds === 720)
   check('开局进入 reading 且带阅读倒计时', host.view.phase === 'reading' && host.view.phaseEndsAt > host.view.serverAt)
 
   host.send({ t: 'advance' })
@@ -860,8 +877,280 @@ async function testSearch(url: string): Promise<void> {
   clients.forEach((c) => c.close())
 }
 
-async function testAccelerate(url: string): Promise<void> {
-  console.log('\n=== 4. 提前结算阈值 ===')
+async function testRematch(url: string): Promise<void> {
+  console.log('\n=== 6. 复盘后再来一局（同房间连开两局） ===')
+  const { host, clients, code } = await createRoom(url, 4)
+  await startGame(host, clients)
+
+  // 打完一整局，走到复盘
+  host.send({ t: 'advance' })
+  await playRound(host, clients, 1)
+  await castStrawVotes(host, clients, spreadTargets(clients, 0), 1)
+  host.send({ t: 'advance' })
+  await playRound(host, clients, 2)
+  await castStrawVotes(host, clients, spreadTargets(clients, 1), 2)
+  host.send({ t: 'advance' })
+  await waitUntil(() => host.view.phase === 'organize', '进入个人整理')
+  host.send({ t: 'advance' })
+  await waitUntil(() => host.view.phase === 'voting', '进入最终投票')
+  const firstKiller = clients.find((c) => c.view.self.isMurderer)
+  const firstRoles = host.view.script.roles.map((r) => r.name)
+  await castFinalVotes(host, clients, clients.map(() => must(firstKiller, '凶手').view.self.roleName))
+  check('第一局已结算到复盘', host.view.phase === 'reveal' && host.view.reveal !== null)
+
+  // 非房主没有重开权限
+  const guest = must(clients[1], '第二位玩家')
+  const guestMark = guest.mark()
+  guest.send({ t: 'rematch' })
+  await waitUntil(() => guest.errors().length > 0, '非房主收到拒绝')
+  check('非房主发「再来一局」被拒绝', guest.lastError()?.code === 'not-host', guest.lastError()?.message)
+  check('被拒绝后阶段没有变化', host.view.phase === 'reveal', `phase=${host.view.phase}`)
+  void guestMark
+
+  // 房主重开：房间退回等待厅，座位与房号都保留
+  host.send({ t: 'rematch' })
+  await waitUntil(() => host.view.phase === 'lobby', '房间退回等待厅')
+  await waitUntil(() => clients.every((c) => c.view.phase === 'lobby'), '所有人回到等待厅')
+
+  check('重开后 started = false', host.view.started === false)
+  check('重开后房号未变', host.view.roomCode === code, `${host.view.roomCode} / ${code}`)
+  check('重开后座位数不变（真人还在）', host.view.seats.length === 4, `${host.view.seats.length} 个座位`)
+  check('重开后本局角色已清空', host.view.self.roleName === '', JSON.stringify(host.view.self.roleName))
+  check('重开后不残留上一局的剧本', host.view.script.roles.length === 0, `${host.view.script.roles.length} 个角色`)
+  check(
+    '重开后真人需要重新准备',
+    host.view.seats.filter((s) => !s.isBot).every((s) => s.ready === false),
+    host.view.seats.map((s) => `${s.name}:${s.ready}`).join(' / '),
+  )
+  check(
+    '重开后凶手特权不再下发',
+    clients.every((c) => c.view.self.privilege === null && c.view.reveal === null),
+  )
+
+  // 同一个房间可以再开一局，且真的换了新剧本（角色名/线索重新分配）。
+  // 本文件为了逐帧审计默认关掉了换名，第二局这里临时打开，
+  // 才能验证「同房间连开两局不会又是同一批人」。
+  delete process.env.MMAI_FIXED_ROLE_NAMES
+  try {
+    await startGame(host, clients)
+  } finally {
+    process.env.MMAI_FIXED_ROLE_NAMES = '1'
+  }
+  const secondRoles = host.view.script.roles.map((r) => r.name)
+  check('重开后能直接再开一局并进入阅读', host.view.started && host.view.phase === 'reading')
+  check(
+    '第二局角色名单与上一局不同（重新洗牌换名）',
+    secondRoles.join(',') !== firstRoles.join(','),
+    `${firstRoles.join('/')} → ${secondRoles.join('/')}`,
+  )
+  check(
+    '第二局每个座位都拿到角色',
+    clients.every((c) => c.view.self.roleName !== '' && c.view.self.role !== null),
+  )
+  clients.forEach((c) => c.close())
+}
+
+/**
+ * 复盘后的第二个选项：解散旧房间。
+ * 与「保留房间」共用房主权限校验，但结果是不可逆的：
+ * 房号立即作废、所有人收到 closed、房间从房间表里被摘掉。
+ */
+async function testDissolve(
+  url: string,
+  rooms: Map<string, unknown>,
+): Promise<void> {
+  console.log('\n=== 6b. 复盘后解散旧房间 ===')
+  const { host, clients, code } = await createRoom(url, 4)
+  await startGame(host, clients)
+
+  // 快速跑完一局到复盘
+  host.send({ t: 'advance' })
+  await playRound(host, clients, 1)
+  await castStrawVotes(host, clients, spreadTargets(clients, 0), 1)
+  host.send({ t: 'advance' })
+  await playRound(host, clients, 2)
+  await castStrawVotes(host, clients, spreadTargets(clients, 1), 2)
+  host.send({ t: 'advance' })
+  await waitUntil(() => host.view.phase === 'organize', '进入个人整理')
+  host.send({ t: 'advance' })
+  await waitUntil(() => host.view.phase === 'voting', '进入最终投票')
+  const killer = clients.find((c) => c.view.self.isMurderer)
+  await castFinalVotes(
+    host,
+    clients,
+    clients.map(() => must(killer, '凶手').view.self.roleName),
+  )
+  check('解散前已在复盘阶段', host.view.phase === 'reveal')
+  check('解散前房间还在房间表里', rooms.has(code), code)
+
+  // 非房主无权解散
+  const guest = must(clients[1], '第二位玩家')
+  guest.send({ t: 'rematch', keep: false })
+  await waitUntil(() => guest.errors().length > 0, '非房主收到拒绝')
+  check('非房主发「解散房间」被拒绝', guest.lastError()?.code === 'not-host')
+  check('被拒绝后房间仍然存在', rooms.has(code) && host.view.phase === 'reveal')
+
+  // 房主解散：所有人收到 closed，连接被关闭，房间从表里摘掉
+  const guestMark = guest.mark()
+  host.send({ t: 'rematch', keep: false })
+  await waitUntil(
+    () => guest.frames.slice(guestMark).some((f) => f.t === 'closed'),
+    '客人收到 closed',
+  )
+  const closed = guest.frames
+    .slice(guestMark)
+    .find((f): f is Extract<ServerMsg, { t: 'closed' }> => f.t === 'closed')
+  check('解散时下发的 reason 是 dissolved', closed?.reason === 'dissolved')
+  check('解散提示包含房主解散文案', (closed?.text ?? '').includes('房主解散了房间'))
+  check('解散后房号立即从房间表移除', !rooms.has(code), code)
+  await waitUntil(
+    () => clients.every((c) => c.socket === null || c.socket.readyState !== 1),
+    '所有连接都被关闭',
+  )
+  check(
+    '解散后所有真人连接都被断开',
+    clients.every((c) => c.socket === null || c.socket.readyState !== 1),
+  )
+
+  // 房号作废：新连接不能再用这个房号进来
+  const late = new TestClient('迟到的人')
+  await late.connect(url)
+  late.send({ t: 'join', name: late.name, roomCode: code, proto: PROTOCOL_VERSION })
+  await waitUntil(() => late.errors().length > 0, '迟到的人被拒绝')
+  check(
+    '解散后的房号无法再加入',
+    late.lastError()?.code === 'room-not-found',
+    late.lastError()?.message,
+  )
+  late.close()
+  clients.forEach((c) => c.close())
+}
+
+/** 从阅读页一路跑到复盘（6b / 6c 共用） */
+async function playToReveal(host: TestClient, clients: TestClient[]): Promise<void> {
+  host.send({ t: 'advance' })
+  await playRound(host, clients, 1)
+  await castStrawVotes(host, clients, spreadTargets(clients, 0), 1)
+  host.send({ t: 'advance' })
+  await playRound(host, clients, 2)
+  await castStrawVotes(host, clients, spreadTargets(clients, 1), 2)
+  host.send({ t: 'advance' })
+  await waitUntil(() => host.view.phase === 'organize', '进入个人整理')
+  host.send({ t: 'advance' })
+  await waitUntil(() => host.view.phase === 'voting', '进入最终投票')
+  const killer = clients.find((c) => c.view.self.isMurderer)
+  await castFinalVotes(
+    host,
+    clients,
+    clients.map(() => must(killer, '凶手').view.self.roleName),
+  )
+  await waitUntil(() => host.view.phase === 'reveal', '进入复盘')
+}
+
+/**
+ * 复盘后的两个出口（6c）：
+ *   · 「返回房间」= 房主 restart(keep=true)，全房退回等待厅，房号不变；
+ *   · 「离开房间」= 真的走人：座位删掉、房主顺位转交，最后一人走了房间直接关掉。
+ * 复盘之前离开仍然只是掉线（座位与角色都留着，可以用 token 重连回来）。
+ */
+async function testRevealLeave(
+  url: string,
+  rooms: Map<string, unknown>,
+): Promise<void> {
+  console.log('\n=== 6c. 复盘后的两个出口：返回房间 / 离开房间 ===')
+
+  // ---------- 1）对局进行中离开：只算掉线 ----------
+  const mid = await createRoom(url, 4)
+  await startGame(mid.host, mid.clients)
+  const quitter = must(mid.clients[1], '中途离开的客人')
+  const midSeats = mid.host.view.seats.length
+  quitter.send({ t: 'leave' })
+  await waitUntil(
+    () => mid.host.view.seats.some((s) => s.seatId === quitter.seatId && !s.connected),
+    '房主看到客人掉线',
+  )
+  check('对局中离开只算掉线：座位不删', mid.host.view.seats.length === midSeats)
+  // 座位留着还不够，得能真的回到原座位上（角色不变）才叫「没退房」
+  const back = new TestClient('掉线回来的客人')
+  await back.connect(url)
+  back.send({
+    t: 'rejoin',
+    roomCode: mid.host.view.roomCode,
+    token: quitter.token,
+    proto: PROTOCOL_VERSION,
+  })
+  await waitUntil(() => back.hasView, '掉线的人重连回来')
+  check('对局中离开的座位可以重连回来', back.seatId === quitter.seatId, back.seatId)
+  check(
+    '重连回来还是原来那个角色',
+    back.view.self.roleName === quitter.view.self.roleName,
+    String(back.view.self.roleName),
+  )
+  mid.clients.forEach((c) => c.close())
+  back.close()
+
+  // ---------- 2）复盘后离开：真的走人 ----------
+  const { host, clients, code } = await createRoom(url, 4)
+  await startGame(host, clients)
+  await playToReveal(host, clients)
+  check('抵达复盘', host.view.phase === 'reveal')
+
+  const guest = must(clients[1], '第二位玩家')
+  const guestMark = host.mark()
+  const seatsBefore = host.view.seats.length
+  guest.send({ t: 'leave' })
+  await waitUntil(
+    () => host.view.seats.length === seatsBefore - 1,
+    '复盘后离开：座位被移除',
+  )
+  check('复盘后离开：座位真的被删掉', host.view.seats.length === seatsBefore - 1)
+  check(
+    '复盘后离开：其他人收到离场提示',
+    host.frames
+      .slice(guestMark)
+      .some((f) => f.t === 'toast' && f.text.includes('离开了房间')),
+  )
+  check('复盘后离开：房间还开着，其他人继续', rooms.has(code))
+
+  // 房主离开 → 房主顺位转交给下一位真人
+  const remaining = clients.filter((c) => c !== guest && c !== host)
+  host.send({ t: 'leave' })
+  await waitUntil(
+    () => remaining.every((c) => c.view.seats.some((s) => s.isHost && s.seatId !== host.seatId)),
+    '房主顺位转交',
+  )
+  const newHostSeat = remaining[0].view.seats.find((s) => s.isHost)
+  check(
+    '房主离开后房主转交给下一位真人',
+    !!newHostSeat && remaining.some((c) => c.seatId === newHostSeat.seatId),
+    newHostSeat?.name,
+  )
+  check('房主离开后房间仍然存在', rooms.has(code))
+
+  // 新一任房主点「返回房间」：全房退回等待厅（房号不变）
+  const nextHost = must(
+    remaining.find((c) => c.seatId === newHostSeat?.seatId),
+    '新一任房主',
+  )
+  nextHost.send({ t: 'rematch', keep: true })
+  await waitUntil(
+    () => nextHost.view.phase === 'lobby' && nextHost.view.started === false,
+    '新房主把房间退回等待厅',
+  )
+  check(
+    '新房主点「返回房间」：全房回到等待厅',
+    remaining.every((c) => c.view.phase === 'lobby'),
+  )
+  check('返回房间后房号不变', nextHost.view.roomCode === code, nextHost.view.roomCode)
+
+  // ---------- 3）最后一个真人离开：房间直接关掉 ----------
+  remaining.forEach((c) => c.send({ t: 'leave' }))
+  await waitUntil(() => !rooms.has(code), '最后一个人走后房间被摘掉', 8000)
+  check('最后一个真人离开后房间自动关闭', !rooms.has(code))
+  remaining.forEach((c) => c.close())
+}
+
+async function testAccelerate(url: string): Promise<void> {  console.log('\n=== 4. 提前结算阈值 ===')
   const { host, clients } = await createRoom(url, 5)
   const built = await buildScriptPackage(5, THEME)
   const pkg = must(built.pkg, '5 人剧本')
@@ -1125,6 +1414,230 @@ async function testBotsAndPass(url: string): Promise<void> {
     host.view.seats.filter((s) => s.isBot).map((s) => s.name).join('/'),
   )
   clients.forEach((c) => c.close())
+}
+
+async function testReadingGate(url: string): Promise<void> {
+  console.log('\n=== 2b. 阅读闸门：所有人读完才能进入陈述 ===')
+  // 4 人局、2 个真人（其余由 AI 补位）：AI 开局即视为读完，能挡路的只有真人
+  const { host, clients } = await createRoom(url, 4, THEME, 2)
+  host.send({ t: 'start' })
+  await waitUntil(() => host.view.started && host.view.phase === 'reading', '进入阅读阶段', 15000)
+  const bots = host.view.seats.filter((s) => s.isBot)
+  check(
+    'AI 补位不挡阅读闸门（开局即视为读完）',
+    bots.length === 2 && bots.every((s) => s.ready === true),
+    bots.map((s) => `${s.name}:${s.ready}`).join(' '),
+  )
+
+  // 谁都没读完：房主也推不动，阶段必须停在阅读
+  host.send({ t: 'advance' })
+  await waitUntil(() => host.lastError()?.code === 'still-reading', '未读完时推进被拒', 5000)
+  check('没读完时房主也推不动（阶段仍停在阅读）', host.view.phase === 'reading', host.view.phase)
+  check(
+    '拒绝理由点名了还没读完的人',
+    (host.lastError()?.message ?? '').includes(clients[1].name),
+    host.lastError()?.message,
+  )
+
+  // 只差一个人：仍然不给过
+  clients[1].send({ t: 'ready', ready: true })
+  await waitUntil(
+    () => host.view.seats.some((s) => s.seatId === clients[1].seatId && s.ready),
+    '客人标记已读完',
+  )
+  const before = host.errors().filter((e) => e.code === 'still-reading').length
+  host.send({ t: 'advance' })
+  await waitUntil(
+    () => host.errors().filter((e) => e.code === 'still-reading').length > before,
+    '只差一人时推进仍被拒',
+    5000,
+  )
+  check('只差一个人也不能推进', host.view.phase === 'reading', host.view.phase)
+
+  // 最后一个人读完 → 放行
+  host.send({ t: 'ready', ready: true })
+  await waitUntil(() => host.view.seats.every((s) => s.isBot || s.ready), '全员读完')
+  check(
+    '最后一个人读完时服务器播报「全部玩家已读完」',
+    host.toasts().some((t) => t.includes('全部玩家已读完')),
+    host.toasts().slice(-2).join(' | '),
+  )
+  host.send({ t: 'advance' })
+  await waitUntil(() => host.view.phase === 'statement', '进入第 1 轮陈述', 8000)
+  check(
+    '全员读完后房主推进 → 第 1 轮陈述',
+    host.view.phase === 'statement' && host.view.round === 1,
+    `${host.view.phase} round=${host.view.round}`,
+  )
+  clients.forEach((c) => c.close())
+
+  // 阅读超时：时间到了还有人没读完，服务器只续时、绝不硬推进
+  const fast = await startServer({ port: 0, host: '127.0.0.1', quiet: true, phaseScale: 0.005 })
+  try {
+    const f = await createRoom(fast.wsUrl, 4, THEME, 2)
+    f.host.send({ t: 'start' })
+    await waitUntil(() => f.host.view.phase === 'reading', '加速房进入阅读', 15000)
+    const endsAt = f.host.view.phaseEndsAt
+    // 阅读 720 秒 × 0.005 ≈ 3.6 秒后到点，但没人读完 → 只把倒计时再往后推 5 分钟
+    await waitUntil(() => f.host.view.phaseEndsAt > endsAt + 60_000, '阅读超时后续时', 15000)
+    check('阅读超时但没读完：不推进到陈述，改为续时', f.host.view.phase === 'reading', f.host.view.phase)
+    check(
+      '续时提示说清了原因（谁还没读完）',
+      f.host.toasts().some((t) => t.includes('还没读完') && t.includes('延长')),
+      f.host.toasts().slice(-2).join(' | '),
+    )
+    f.clients.forEach((c) => c.send({ t: 'ready', ready: true }))
+    await waitUntil(() => f.host.view.seats.every((s) => s.isBot || s.ready), '加速房全员读完')
+    f.host.send({ t: 'advance' })
+    await waitUntil(() => f.host.view.phase !== 'reading', '读完后再推进就能离开阅读', 8000)
+    check('全员读完后推进即离开阅读阶段', f.host.view.phase === 'statement', f.host.view.phase)
+    f.clients.forEach((c) => c.close())
+  } finally {
+    await fast.close()
+  }
+}
+
+/**
+ * 难度：轻松 / 标准 / 硬核
+ * ------------------------------------------------------------------
+ * 服务端必须自己算节奏，而不是听客户端的：难度决定陈述时长、凶手特权解锁轮，
+ * 所以「每个座位收到的 view.difficulty」和「phaseEndsAt」都要对得上。
+ */
+async function testDifficulty(url: string): Promise<void> {
+  console.log('\n=== 2c. 难度：建房下发、节奏时长与特权轮 ===')
+
+  const openToStatement = async (
+    room: { host: TestClient; clients: TestClient[] },
+    label: string,
+  ): Promise<void> => {
+    room.host.send({ t: 'start' })
+    await waitUntil(() => room.host.view.phase === 'reading', `${label} 进入阅读`, 15000)
+    room.clients.forEach((c) => c.send({ t: 'ready', ready: true }))
+    await waitUntil(() => room.host.view.seats.every((s) => s.isBot || s.ready), `${label} 全员读完`)
+    room.host.send({ t: 'advance' })
+    await waitUntil(() => room.host.view.phase === 'statement', `${label} 进入第 1 轮陈述`, 8000)
+  }
+
+  // —— 硬核 4 人局 ——
+  const hard = await createRoom(url, 4, THEME, 4, 'hard')
+  check(
+    '建房带难度：每个客户端都收到 difficulty=hard',
+    hard.clients.every((c) => c.view.difficulty === 'hard'),
+    hard.clients.map((c) => c.view.difficulty).join(','),
+  )
+  await openToStatement(hard, '硬核局')
+  check(
+    '服务端生成的剧本也盖了难度戳（下发帧里就能看到）',
+    hard.host.view.script.game_config.difficulty === 'hard',
+    String(hard.host.view.script.game_config.difficulty),
+  )
+  const hardRule = pacingForDifficulty(4, 'hard')
+  const hardLeft = hard.host.view.phaseEndsAt - hard.host.view.serverAt
+  check(
+    '硬核：陈述时长按难度算（4 人 3 分钟，比标准少 1 分钟）',
+    Math.abs(hardLeft - hardRule.roundSeconds * 1000) < 6000 &&
+      hardRule.roundSeconds < pacingFor(4).roundSeconds,
+    `${Math.round(hardLeft / 1000)}s（标准 ${pacingFor(4).roundSeconds}s）`,
+  )
+  const hardKiller = hard.clients.find((c) => c.view.self.isMurderer)
+  check(
+    '硬核：凶手第 1 轮就拿到特权面板',
+    !!hardKiller && hardKiller.view.self.privilege?.round === 1,
+    hardKiller ? String(hardKiller.view.self.privilege?.round) : '没有凶手端',
+  )
+  check(
+    '硬核：平民端第 1 轮依旧看不到特权',
+    hard.clients.filter((c) => !c.view.self.isMurderer).every((c) => c.view.self.privilege === null),
+  )
+  hard.clients.forEach((c) => c.close())
+
+  // —— 标准 4 人局（不传难度） ——
+  const normal = await createRoom(url, 4, THEME, 4)
+  check(
+    '不传难度 → 标准档',
+    normal.clients.every((c) => c.view.difficulty === 'normal'),
+    normal.clients.map((c) => c.view.difficulty).join(','),
+  )
+  await openToStatement(normal, '标准局')
+  const normalLeft = normal.host.view.phaseEndsAt - normal.host.view.serverAt
+  check(
+    '标准：陈述时长等于升级前的 4 分钟（行为零变化）',
+    Math.abs(normalLeft - pacingFor(4).roundSeconds * 1000) < 6000,
+    `${Math.round(normalLeft / 1000)}s`,
+  )
+  const normalKiller = normal.clients.find((c) => c.view.self.isMurderer)
+  check(
+    '标准：凶手第 1 轮还没有特权（第 2 轮才解锁）',
+    !!normalKiller && normalKiller.view.self.privilege === null,
+  )
+  normal.clients.forEach((c) => c.close())
+
+  // —— 轻松 4 人局：阅读更长（+2 分钟），读到就能看出来 ——
+  const easy = await createRoom(url, 4, THEME, 4, 'easy')
+  check('轻松：difficulty 下发正确', easy.clients.every((c) => c.view.difficulty === 'easy'))
+  easy.host.send({ t: 'start' })
+  await waitUntil(() => easy.host.view.phase === 'reading', '轻松局进入阅读', 15000)
+  const easyLeft = easy.host.view.phaseEndsAt - easy.host.view.serverAt
+  check(
+    '轻松：阅读时长 +2 分钟',
+    Math.abs(easyLeft - pacingForDifficulty(4, 'easy').readingSeconds * 1000) < 6000 &&
+      easyLeft > pacingFor(4).readingSeconds * 1000,
+    `${Math.round(easyLeft / 1000)}s（标准 ${pacingFor(4).readingSeconds}s）`,
+  )
+  check(
+    '轻松：剧本也盖了难度戳',
+    easy.host.view.script.game_config.difficulty === 'easy',
+    String(easy.host.view.script.game_config.difficulty),
+  )
+  easy.clients.forEach((c) => c.close())
+
+  // —— 非法难度：一律回落到标准，绝不让房间炸掉 ——
+  const bad = await createRoom(url, 4, THEME, 2, 'legendary' as unknown as 'hard')
+  check(
+    '非法难度回落到标准档',
+    bad.clients.every((c) => c.view.difficulty === 'normal'),
+    bad.clients.map((c) => c.view.difficulty).join(','),
+  )
+  bad.clients.forEach((c) => c.close())
+
+  // —— 房间单元：难度记在房间上，节奏一次算好，顺序与边界都自洽 ——
+  const unitHard = new Room({ code: 'DIFF1', playerCount: 6, theme: THEME, difficulty: 'hard', logger: () => {} })
+  check(
+    '房间单元：6 人硬核 = 每轮 5 分钟、每轮搜证 1 次、第 1 轮特权',
+    unitHard.difficulty === 'hard' &&
+      unitHard.pacing.roundSeconds === pacingFor(6).roundSeconds - 60 &&
+      unitHard.pacing.searchPerRound === pacingFor(6).searchPerRound - 1 &&
+      unitHard.pacing.privilegeRound === 1,
+    `${unitHard.pacing.roundSeconds}s / 搜证 ${unitHard.pacing.searchPerRound} 次 / 特权第 ${unitHard.pacing.privilegeRound} 轮`,
+  )
+  const unitBad = new Room({
+    code: 'DIFF2',
+    playerCount: 6,
+    theme: THEME,
+    difficulty: 'nonsense' as unknown as 'hard',
+    logger: () => {},
+  })
+  check(
+    '房间单元：非法难度 → 标准（节奏与 pacingFor 逐字段一致）',
+    unitBad.difficulty === 'normal' &&
+      unitBad.pacing.roundSeconds === pacingFor(6).roundSeconds &&
+      unitBad.pacing.searchPerRound === pacingFor(6).searchPerRound &&
+      unitBad.pacing.privilegeRound === pacingFor(6).privilegeRound,
+  )
+  const custom = await buildScriptPackage(4, THEME)
+  const customPkg = must(custom.pkg, '自定义剧本')
+  customPkg.game_config.difficulty = 'easy'
+  const unitCustom = new Room({ code: 'DIFF3', playerCount: 4, theme: THEME, script: customPkg, logger: () => {} })
+  check(
+    '房间单元：自定义剧本自带的难度优先（房主没另选时）',
+    unitCustom.difficulty === 'easy' && unitCustom.pacing.readingSeconds > pacingFor(4).readingSeconds,
+    `${unitCustom.difficulty} / ${unitCustom.pacing.readingSeconds}s`,
+  )
+  const seat = unitHard.addSeat({ name: '甲', isBot: false, connected: true, ready: false, host: true })
+  check(
+    '房间单元：视图里带着难度（客户端不用自己猜）',
+    censorSeat(unitHard, seat.seatId).difficulty === 'hard',
+  )
 }
 
 async function testPhaseTimeout(): Promise<void> {
@@ -2170,7 +2683,8 @@ async function testProfiles(): Promise<void> {
   )
   for (let i = 0; i < 40; i += 1) {
     store.recordGame(pid, {
-      roomCode: 'ZZZZZ',
+      // 每局都是不同的房间（真实场景就是这样）；同房间同一条记录会被数据库判成重复结算
+      roomCode: `Z${String(i).padStart(4, '0')}`,
       theme: '压力测试',
       playerCount: 4,
       result: i % 2 === 0 ? 'win' : 'lose',
@@ -2182,26 +2696,31 @@ async function testProfiles(): Promise<void> {
   check(`历史只保留最近 ${PROFILE_LIMITS.historyLen} 局`, capped.history.length === PROFILE_LIMITS.historyLen, `${capped.history.length} 条`)
   check('但累计战绩不丢（42 局）', capped.stats.games === 42, `${capped.stats.games} 局`)
 
-  /* ---------------- 15.3 落盘 / 重启 ---------------- */
+  /* ---------------- 15.3 落盘 / 重启（SQLite） ---------------- */
   store.flush()
-  check('落盘文件存在且是合法 JSON', fs.existsSync(store.filePath) && typeof (JSON.parse(fs.readFileSync(store.filePath, 'utf8')) as { players: Record<string, unknown> }).players[pid] === 'object')
-  check('另有 .bak 备份（手滑也能救）', fs.existsSync(path.join(profileDir, 'profiles.json.bak')))
+  const header = fs.readFileSync(store.filePath).subarray(0, 15).toString('latin1')
+  check('数据落进真正的 SQLite 数据库（文件头 = "SQLite format 3"）', header === 'SQLite format 3', header)
+  check(`库文件就叫 ${DB_FILE}`, path.basename(store.filePath) === DB_FILE)
+  check('另有 .bak 一致性快照（手滑也能救）', fs.existsSync(path.join(profileDir, DB_BACKUP)))
   const reopened = new ProfileStore({ dir: profileDir, quiet: true })
   const back = must(reopened.get(pid), '新实例读到档案')
   check(
     '「重启」后档案仍在：昵称/头像/战绩/历史都对得上',
     back.name === longName.name && back.avatar === '🦊' && back.stats.games === 42 && back.history.length === PROFILE_LIMITS.historyLen,
   )
+  check('重启后完整性自检通过', reopened.checkIntegrity().ok, JSON.stringify(reopened.checkIntegrity().issues))
+  reopened.close()
 
-  /* ---------------- 15.4 坏文件不致命 ---------------- */
+  /* ---------------- 15.4 坏库不致命 ---------------- */
   const brokenDir = path.join(root, 'broken')
   fs.mkdirSync(brokenDir, { recursive: true })
-  fs.writeFileSync(path.join(brokenDir, 'profiles.json'), '{ this is not json at all')
+  fs.writeFileSync(path.join(brokenDir, DB_FILE), 'this is definitely not a sqlite database at all')
   const recovered = new ProfileStore({ dir: brokenDir, quiet: true })
-  check('档案文件坏了：从空库启动，不抛错', recovered.count() === 0)
+  check('数据库文件坏了：从空库启动，不抛错', recovered.count() === 0)
   const backups = fs.readdirSync(brokenDir).filter((f) => f.includes('.corrupt-'))
-  check('坏文件被改名备份（留证据，不静默丢弃）', backups.length === 1, backups.join(','))
-  check('坏文件之后照样能继续写', recovered.upsert({ id: 'after-corrupt-01', name: '新玩家' })?.name === '新玩家')
+  check('坏库被改名隔离（留证据，不静默丢弃）', backups.length === 1, backups.join(','))
+  check('坏库之后照样能继续写', recovered.upsert({ id: 'after-corrupt-01', name: '新玩家' })?.name === '新玩家')
+  recovered.close()
 
   /* ---------------- 15.5 HTTP 接口 ---------------- */
   const apiStore = new ProfileStore({ dir: path.join(root, 'api'), quiet: true })
@@ -2209,6 +2728,13 @@ async function testProfiles(): Promise<void> {
   try {
     const health = await httpJson(`${api.base}/api/health`)
     check('GET /api/health 正常', health.status === 200 && health.json.ok === true && typeof health.json.profileCount === 'number')
+    const healthDb = health.json.db as { engine: string; file: string; schemaVersion: number; games: number; integrity: string }
+    check(
+      '健康检查报出数据库信息（引擎 / 文件 / 结构版本 / 完整性）',
+      healthDb?.engine === 'sqlite' && healthDb?.file === DB_FILE && healthDb?.schemaVersion >= 1 && healthDb?.integrity === 'ok',
+      JSON.stringify(healthDb),
+    )
+    check('健康检查的外键/对账结果干净', (health.json.integrity as { ok: boolean }).ok === true)
 
     const put = await httpJson(`${api.base}/api/profile`, {
       method: 'PUT',
@@ -2227,9 +2753,27 @@ async function testProfiles(): Promise<void> {
     )
 
     const got = await httpJson(`${api.base}/api/profile?id=api-player-001`)
-    const gotProfile = got.json.profile as { name: string; avatar: string; ai: Record<string, unknown> }
+    const gotProfile = got.json.profile as { name: string; avatar: string; ai: Record<string, unknown>; genres?: string[] }
     check('GET 读回同一份档案', got.status === 200 && gotProfile.name === '档案甲' && gotProfile.avatar === '🐼')
     check('接口回包里没有密钥', !got.text.includes('sk-leak-me') && !('apiKey' in (gotProfile.ai ?? {})))
+
+    // 偏好题材（「我的」页里选的「喜欢哪种类型的剧本」）也要能存能取
+    const withGenres = await httpJson(`${api.base}/api/profile`, {
+      method: 'PUT',
+      body: { id: 'api-player-001', genres: ['民国·远洋邮轮谋杀案', '现代·雪山山庄', '民国·远洋邮轮谋杀案', ''] },
+    })
+    check(
+      '偏好题材写库后立刻回显（去重、去空）',
+      JSON.stringify((withGenres.json.profile as { genres: string[] }).genres) === JSON.stringify(['民国·远洋邮轮谋杀案', '现代·雪山山庄']),
+      JSON.stringify((withGenres.json.profile as { genres: string[] }).genres),
+    )
+    const again = await httpJson(`${api.base}/api/profile?id=api-player-001`)
+    check('重新查一次，偏好题材还在（真的落盘了）', (again.json.profile as { genres: string[] }).genres.length === 2)
+    check(
+      '只改题材不会把昵称 / 头像冲掉',
+      (again.json.profile as { name: string; avatar: string }).name === '档案甲' &&
+        (again.json.profile as { avatar: string }).avatar === '🐼',
+    )
 
     const nobody = await httpJson(`${api.base}/api/profile?id=never-seen-me-01`)
     check('查不存在的档案：200 + profile:null（不是 500）', nobody.status === 200 && nobody.json.profile === null)
@@ -2260,10 +2804,12 @@ async function testProfiles(): Promise<void> {
     )
   } finally {
     await api.close()
+    apiStore.close()
   }
 
   // 限流：单独一个「10 秒 3 次」的窗口
-  const rateApi = await serveApi(new ProfileStore({ dir: path.join(root, 'rate'), quiet: true }), {
+  const rateStore = new ProfileStore({ dir: path.join(root, 'rate'), quiet: true })
+  const rateApi = await serveApi(rateStore, {
     windowMs: 60_000,
     max: 3,
   })
@@ -2273,6 +2819,7 @@ async function testProfiles(): Promise<void> {
     check('超过窗口上限 → 429（前 3 次 200）', codes.slice(0, 3).every((c) => c === 200) && codes[3] === 429 && codes[4] === 429, codes.join(','))
   } finally {
     await rateApi.close()
+    rateStore.close()
   }
 
   /* ---------------- 15.6 真打一局：服务器结算 → 记战绩 ---------------- */
@@ -2323,6 +2870,9 @@ async function testProfiles(): Promise<void> {
     host.send({ t: 'start' })
     await waitUntil(() => host.view.started && host.view.phase === 'reading', '开局进入阅读', 15000)
     const clients = [host, guest, third, fourth]
+    // 阅读闸门：所有人点「我已读完」之后才能进入陈述
+    clients.forEach((c) => c.send({ t: 'ready', ready: true }))
+    await waitUntil(() => host.view.seats.every((s) => s.ready), '四人读完剧本')
     host.send({ t: 'advance' })
     await playRound(host, clients, 1)
     await castStrawVotes(host, clients, spreadTargets(clients, 1), 1)
@@ -2394,6 +2944,195 @@ async function testProfiles(): Promise<void> {
     guest.close()
     third.close()
     fourth.close()
+    store.close()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * 15b. 玩家数据库：约束 / 事务 / 自检 / 备份 / 迁移
+ * ------------------------------------------------------------------ */
+
+async function testPlayerDatabase(): Promise<void> {
+  console.log('\n=== 15b. 玩家数据库：SQLite 约束 / 事务 / 自检 / 备份 / 迁移 ===')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mmai-db-'))
+  const dir = path.join(root, 'main')
+  const pid = 'db-player-0001'
+  const store = new ProfileStore({ dir, quiet: true })
+  const raw = store.engine.raw()
+  let other: ProfileStore | null = null
+  let healed: ProfileStore | null = null
+  let migrated: ProfileStore | null = null
+  try {
+    /* ---------------- 15b.1 玩家资料各字段都进库 ---------------- */
+    const created = must(
+      store.upsert({ id: pid, name: '库甲', avatar: '🦉', genres: ['民国·远洋邮轮谋杀案', '现代·雪山山庄'] }),
+      '建一份档案',
+    )
+    check(
+      '偏好题材随档案入库（顺序保持）',
+      JSON.stringify(created.genres) === JSON.stringify(['民国·远洋邮轮谋杀案', '现代·雪山山庄']),
+      JSON.stringify(created.genres),
+    )
+    const many = must(store.upsert({ id: pid, genres: ['a', 'b', 'c', 'd', 'e', 'f', 'g'] }), '写 7 个题材')
+    check('偏好题材最多记 6 个（多余的截断）', many.genres.length === 6, JSON.stringify(many.genres))
+    check('只改题材不会把昵称冲掉', many.name === '库甲' && many.avatar === '🦉', `${many.name}/${many.avatar}`)
+
+    /* ---------------- 15b.2 数据库自己拦脏数据 ---------------- */
+    let statsErr = ''
+    try {
+      raw.prepare('UPDATE player_stats SET wins = 5 WHERE player_id = ?').run(pid)
+    } catch (e) {
+      statsErr = (e as Error).message
+    }
+    check('CHECK 拦下「胜场 + 负场 ≠ 总局数」的脏写入', /CHECK/i.test(statsErr), statsErr)
+
+    let resultErr = ''
+    try {
+      raw.prepare('INSERT INTO games (player_id, played_at, result) VALUES (?, ?, ?)').run(pid, 1, 'draw')
+    } catch (e) {
+      resultErr = (e as Error).message
+    }
+    check('对局结果只允许 win / lose（枚举约束）', /CHECK/i.test(resultErr), resultErr)
+
+    let fkErr = ''
+    try {
+      raw.prepare('INSERT INTO games (player_id, played_at, result) VALUES (?, ?, ?)').run('ghost-player-01', 5, 'win')
+    } catch (e) {
+      fkErr = (e as Error).message
+    }
+    check('外键拦下「给不存在的玩家记战绩」', /FOREIGN KEY/i.test(fkErr), fkErr)
+
+    /* ---------------- 15b.3 重复结算只记一次 ---------------- */
+    const rec = {
+      roomCode: 'ROOM1',
+      theme: THEME,
+      playerCount: 4,
+      result: 'win' as const,
+      role: '陆维桢',
+      isMurderer: false,
+      at: 1_700_000_000_000,
+    }
+    const first = must(store.recordGame(pid, rec), '记一局')
+    const twice = must(store.recordGame(pid, rec), '同一条再记一次')
+    check(
+      '同一条结算被重复调用时只记一局（房间重试不会刷战绩）',
+      twice.stats.games === first.stats.games && twice.history.length === first.history.length,
+      `${first.stats.games} → ${twice.stats.games}`,
+    )
+
+    /* ---------------- 15b.4 事务原子性 ---------------- */
+    let threw = false
+    try {
+      store.engine.transaction(() => {
+        raw
+          .prepare('INSERT INTO players (id, name, avatar, created_at, updated_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)')
+          .run('txn-player-001', '半条', '🖤', 1, 1, 1)
+        throw new Error('boom')
+      })
+    } catch {
+      threw = true
+    }
+    check('事务中途失败 → 整段回滚，不留半条档案', threw && store.get('txn-player-001') === null)
+
+    /* ---------------- 15b.5 崩溃 / 并发读 ---------------- */
+    other = new ProfileStore({ dir, quiet: true })
+    const fromDisk = must(other.get(pid), '另一个连接读到档案')
+    check(
+      '没 flush、没优雅关闭，另开连接也能读到已提交的数据（WAL + 提交即落盘）',
+      fromDisk.stats.games === 1 && fromDisk.genres.length === 6,
+      JSON.stringify(fromDisk.stats),
+    )
+
+    const report = store.checkIntegrity()
+    check(
+      '完整性报告：integrity_check / 外键 / 战绩对账全部通过',
+      report.ok && report.quick === 'ok' && report.foreignKeyIssues === 0 && report.statMismatches.length === 0,
+      JSON.stringify(report.issues),
+    )
+    check('报告里能数出玩家与对局', report.players >= 1 && report.games >= 1, `${report.players} 人 / ${report.games} 局`)
+
+    store.flush()
+    const snapshot = store.statsSnapshot()
+    check(
+      '落盘快照报的是数据库（sqlite / 库文件 / 结构版本）',
+      snapshot.engine === 'sqlite' &&
+        path.basename(snapshot.filePath) === DB_FILE &&
+        snapshot.schemaVersion >= 1 &&
+        snapshot.fileBytes > 0 &&
+        snapshot.backupBytes > 0,
+      `${snapshot.engine} v${snapshot.schemaVersion} ${snapshot.fileBytes}B bak=${snapshot.backupBytes}B`,
+    )
+
+    /* ---------------- 15b.6 备份 → 坏库自动恢复 ---------------- */
+    other.close()
+    other = null
+    store.close()
+    check('关闭时留了一份 .bak 一致性快照', fs.existsSync(path.join(dir, DB_BACKUP)))
+    fs.writeFileSync(path.join(dir, DB_FILE), 'corrupted on purpose —— 不是数据库')
+    healed = new ProfileStore({ dir, quiet: true })
+    const restored = healed.get(pid)
+    check(
+      '库文件被写坏：自动从 .bak 恢复，档案一条不少',
+      restored?.name === '库甲' && restored?.stats.games === 1 && restored?.genres.length === 6,
+      JSON.stringify(restored?.stats ?? null),
+    )
+    check('坏库被改名隔离（证据留在磁盘上，方便排查）', fs.readdirSync(dir).some((f) => f.includes('.corrupt-')))
+    check('恢复后的库完整性依旧通过', healed.checkIntegrity().ok, JSON.stringify(healed.checkIntegrity().issues))
+
+    /* ---------------- 15b.7 旧版 profiles.json 自动迁移 ---------------- */
+    const legacyDir = path.join(root, 'legacy')
+    fs.mkdirSync(legacyDir, { recursive: true })
+    const legacyPid = 'legacy-player-01'
+    fs.writeFileSync(
+      path.join(legacyDir, PROFILE_FILE),
+      JSON.stringify({
+        v: 1,
+        players: {
+          [legacyPid]: {
+            id: legacyPid,
+            name: '老档案',
+            avatar: '🐼',
+            createdAt: 1000,
+            updatedAt: 2000,
+            lastSeenAt: 3000,
+            stats: { games: 3, wins: 2, losses: 1, asMurderer: 1, murdererWins: 1 },
+            history: [
+              { at: 10, roomCode: 'OLD01', theme: THEME, playerCount: 4, result: 'win', role: '陆维桢', isMurderer: false },
+              { at: 20, roomCode: 'OLD02', theme: '现代·雪山山庄', playerCount: 5, result: 'lose', role: '沈知雪', isMurderer: true },
+              { at: 30, roomCode: 'OLD03', theme: THEME, playerCount: 4, result: 'win', role: '陆维桢', isMurderer: false },
+            ],
+            ai: { provider: 'openai', model: 'deepseek-chat', baseUrl: 'https://x/v1', apiKey: 'sk-legacy-should-drop' },
+            genres: ['民国·远洋邮轮谋杀案'],
+          },
+        },
+      }),
+    )
+    migrated = new ProfileStore({ dir: legacyDir, quiet: true })
+    const old = must(migrated.get(legacyPid), '迁移后的档案')
+    check(
+      '旧版 profiles.json 自动整库迁移（昵称 / 头像 / 战绩 / 历史 / 偏好都在）',
+      old.name === '老档案' &&
+        old.avatar === '🐼' &&
+        old.stats.games === 3 &&
+        old.stats.wins === 2 &&
+        old.stats.losses === 1 &&
+        old.history.length === 3 &&
+        old.genres.length === 1,
+      JSON.stringify({ stats: old.stats, history: old.history.length, genres: old.genres }),
+    )
+    check('迁移时密钥照样被丢掉', !JSON.stringify(old).includes('sk-legacy-should-drop'))
+    check(
+      '迁移后旧文件改名留档（不删原数据）',
+      fs.readdirSync(legacyDir).some((f) => f.includes('.migrated-')) && !fs.existsSync(path.join(legacyDir, PROFILE_FILE)),
+      fs.readdirSync(legacyDir).join(','),
+    )
+    check('迁移后的数据完整性通过（统计与对局表对得上）', migrated.checkIntegrity().ok, JSON.stringify(migrated.checkIntegrity().issues))
+  } finally {
+    other?.close()
+    healed?.close()
+    migrated?.close()
+    store.close()
     fs.rmSync(root, { recursive: true, force: true })
   }
 }
@@ -2405,6 +3144,8 @@ async function testProfiles(): Promise<void> {
 async function main(): Promise<void> {
   // 主用例段也用一个临时档案目录，别把测试数据写进仓库里的 server/data
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmai-main-'))
+  // 兜底：有些用例直接 startServer({ port: 0 })，让它们也落到临时目录（绝不碰玩家的真实数据库）
+  process.env.MMAI_DATA_DIR = dataDir
   const handle = await startServer({ port: 0, host: '127.0.0.1', quiet: true, dataDir })
   const url = handle.wsUrl
   console.log(`房间服务器已在 127.0.0.1:${handle.port} 启动（进程内），开始跑测试……`)
@@ -2414,8 +3155,13 @@ async function main(): Promise<void> {
     await testStaticFallback()
     await testIsolation(url)
     await testFullFlow(url)
+    await testReadingGate(url)
+    await testDifficulty(url)
     await testSearch(url)
     await testAccelerate(url)
+    await testRematch(url)
+    await testDissolve(url, handle.rooms)
+    await testRevealLeave(url, handle.rooms)
     await testRoomCodeAndRejoin(url)
     await testBotsAndPass(url)
     await testPhaseTimeout()
@@ -2428,6 +3174,7 @@ async function main(): Promise<void> {
     await testTlsArgs()
     await testTlsSoftLanding()
     await testProfiles()
+    await testPlayerDatabase()
   } finally {
     await handle.close()
     fs.rmSync(dataDir, { recursive: true, force: true })

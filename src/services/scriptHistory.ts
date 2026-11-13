@@ -38,6 +38,13 @@ function hash(text: string): string {
  * 改换题材名或简单改写标点不会绕过重复检测。
  */
 export function scriptFingerprint(pkg: ScriptPackage): string {
+  // 内置模板每局都会给角色换名。姓名参与指纹的话，同一案件换个名字
+  // 就会被误判成新剧本，所以用模板的稳定 case_id 识别它。
+  const caseId = pkg.game_config?.case_id
+  if (caseId) {
+    return `case-${hash(`${caseId}|${pkg.game_config.player_count}`)}`
+  }
+
   const roles = pkg.roles
     .map((role) => `${canonical(role.name)}|${canonical(role.identity)}`)
     .sort()

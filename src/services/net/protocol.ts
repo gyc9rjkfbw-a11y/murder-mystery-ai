@@ -17,7 +17,7 @@
  */
 
 import type { GamePhase, RoundSummary, SettlementRow, Statement, VoteRecord } from '@/types/game'
-import type { ClueItem, Role, ScriptPackage } from '@/types/script'
+import type { ClueItem, Difficulty, Role, ScriptPackage } from '@/types/script'
 
 /** 房间服务器默认端口 */
 export const NET_PORT = 5274
@@ -135,6 +135,12 @@ export interface SeatView {
   roomCode: string
   playerCount: number
   theme: string
+  /**
+   * 本局难度（服务端权威）。
+   * 它决定阶段时长、凶手特权解锁轮与线索发放时序，所以必须随每一帧下发，
+   * 否则各端会按自己本地的选择算倒计时。
+   */
+  difficulty: Difficulty
   phase: GamePhase
   /** 是否已经开始（false = 还在大厅选座位） */
   started: boolean
@@ -213,6 +219,12 @@ export type ServerMsg =
   | { t: 'chat'; msg: ChatMessage }
   /** 语音信令：从某个座位转发给我的 WebRTC 数据 */
   | { t: 'voice-signal'; fromSeatId: string; data: VoiceSignal }
+  /**
+   * 房间已经结束（目前只有一种：房主在复盘后选择「解散旧房间」）。
+   * 收到这一帧时客户端必须清空本地局、断开连接并回首页 ——
+   * 之后服务器不再保留这个房号，重连也连不回来。
+   */
+  | { t: 'closed'; reason: 'dissolved'; text: string }
 
 /* ------------------------------------------------------------------ *
  * 客户端 → 服务器
@@ -229,6 +241,8 @@ export type ClientMsg =
       name: string
       playerCount: number
       theme: string
+      /** 本局难度：只能 easy / normal / hard，缺省按标准 */
+      difficulty?: Difficulty
       proto: number
       playerId?: string
       avatar?: string
@@ -243,6 +257,12 @@ export type ClientMsg =
   | { t: 'ready'; ready: boolean }
   /** 房主：开始游戏（空位自动补 AI 玩家） */
   | { t: 'start' }
+  /**
+   * 房主：本局复盘后结束这一桌。
+   * - `keep !== false`（默认）：房间退回等待厅，房号 / 座位 / 真人连接全部保留，可以直接开下一局；
+   * - `keep === false`：解散旧房间，所有人收到 `closed` 被请回首页，房号作废。
+   */
+  | { t: 'rematch'; keep?: boolean }
   /** 房主：推进到下一阶段（或任意玩家，服务器按 allowAnyAdvance 判定） */
   | { t: 'advance' }
   /** 当前发言人提交发言 */

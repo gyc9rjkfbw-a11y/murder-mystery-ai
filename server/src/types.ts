@@ -10,7 +10,7 @@
 
 import type { WebSocket } from 'ws'
 import type { GamePhase, RoundSummary, SettlementRow, Statement, VoteRecord } from '@/types/game'
-import type { ClueItem, ScriptPackage } from '@/types/script'
+import type { ClueItem, Difficulty, ScriptPackage } from '@/types/script'
 import type { RevealView, TallyRow } from '@/services/net/protocol'
 
 /** 房间内的一个座位（玩家或 AI） */
@@ -54,6 +54,8 @@ export interface RoomOptions {
   code: string
   playerCount: number
   theme: string
+  /** 本局难度（房主建房时选的；缺省 / 非法值一律按标准） */
+  difficulty?: Difficulty
   /** 房主导入的自定义剧本；存在时跳过服务器本地生成。 */
   script?: ScriptPackage | null
   /** 打一行中文日志用的回调（已带房间号前缀） */
@@ -63,6 +65,11 @@ export interface RoomOptions {
    * 这里只交出「谁赢谁输」，不碰存储实现 —— room.ts 不依赖 store.ts。
    */
   onGameSettled?: (rows: SettledPlayerRow[]) => void
+  /**
+   * 房主解散房间时的回调：由 app.ts 把房号从房间表里删掉并回收定时器。
+   * 只交出房号，不让 room.ts 反向依赖 app.ts。
+   */
+  onDissolve?: (code: string) => void
   /**
    * 阶段时长压缩系数（默认 1，仅测试用）：
    * 真实时长都是几分钟，测试里按比例压缩后才能在几秒内验证

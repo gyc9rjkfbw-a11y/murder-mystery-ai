@@ -62,7 +62,7 @@ function fallbackPage(secure: boolean): string {
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>AI 剧本杀 · 房间服务器</title>
+<title>谜案剧本杀 · 房间服务器</title>
 <style>
   body{margin:0;padding:32px 20px;background:#14110f;color:#f3ece5;
        font:16px/1.7 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
@@ -73,7 +73,7 @@ function fallbackPage(secure: boolean): string {
   ol{padding-left:20px} li{margin:8px 0}
   .ok{color:#7ed957}
 </style></head><body><div class="box">
-<h1>🕯️ AI 剧本杀 · 房间服务器已启动</h1>
+<h1>🕯️ 谜案剧本杀 · 房间服务器已启动</h1>
 <p class="ok">WebSocket 服务正常：<code>${wsScheme}://本机地址:端口/</code></p>
 <p>但没有找到前端网页（缺少 <code>dist/index.html</code>），所以这个地址暂时只提供联机服务。</p>
 ${mic}

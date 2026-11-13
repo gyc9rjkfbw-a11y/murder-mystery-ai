@@ -56,7 +56,7 @@ function goSocial() {
 }
 
 function goMine() {
-  router.push('/settings')
+  router.push('/me')
 }
 
 function select(item: AppNavItem) {

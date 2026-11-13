@@ -9,6 +9,7 @@
  * `src/types/script.ts`、`src/services/rules.ts` 与 `src/services/validator.ts`。
  */
 
+import { DIFFICULTIES, difficultyFor } from './difficulty'
 import { pacingFor } from './rules'
 
 /** 指令中约定的 JSON 输出结构（原样保留，作为 Prompt 的一部分发送给模型） */
@@ -26,6 +27,7 @@ export const OUTPUT_SCHEMA_TEXT = `{
   "roles": [
     {
       "name": "角色姓名",
+      "gender": "male 或 female（角色性别，必须与姓名和身份一致，用于渲染该角色的专属头像）",
       "identity": "角色身份",
       "is_murderer": true,
       "surface_task": "表层任务（开局必须完成的隐藏小目标，如隐瞒某事、寻找某物）",
@@ -47,9 +49,9 @@ export const OUTPUT_SCHEMA_TEXT = `{
 /** 升级模块一：动态长度与复杂度控制规则 */
 export const DYNAMIC_LENGTH_RULES = `【动态长度与复杂度控制规则】
 你必须根据 player_count（玩家人数）严格调整剧本的长度和信息密度：
-- 若为 4人局：每个角色的 full_script 控制在 1500-1900字。剧情必须高度浓缩，禁止无关支线，所有角色的秘密必须高度交叉。
-- 若为 5人局：每个角色的 full_script 控制在 1900-2400字。允许存在 1 个边缘角色，但必须承担线索串联功能。增加情感与动机描写。
-- 若为 6人局：每个角色的 full_script 控制在 2300-2800字。为防止玩家边缘化，必须为每个角色额外生成 1-2 条与主线无关的“独立支线任务”（如隐藏的情感纠葛、寻找失物等），并在 full_script 中明确写出。
+- 若为 4人局：每个角色的 full_script 控制在 1500-2200字。剧情必须高度浓缩，禁止无关支线，所有角色的秘密必须高度交叉。
+- 若为 5人局：每个角色的 full_script 控制在 1900-2900字。允许存在 1 个边缘角色，但必须承担线索串联功能。增加情感与动机描写。
+- 若为 6人局：每个角色的 full_script 控制在 2300-3300字。为防止玩家边缘化，必须为每个角色额外生成 1-2 条与主线无关的“独立支线任务”（如隐藏的情感纠葛、寻找失物等），并在 full_script 中明确写出。
 
 每个角色的 full_script 必须包含足够多的可扮演细节，而不是重复扩写：
 - 至少 4 个具体场景：日常片段、案发前准备、案发当时、案发后的反应。
@@ -81,19 +83,44 @@ export const MULTI_ROUND_RULES = `【多轮节奏与线索分批发放】
   第三批（tier=3，决定性）：关键物证、尸检与药物残留报告、决定性证词，2-3 条，能把逻辑收口到 global_truth，但不得直接写出凶手姓名。
 - 三批线索合计 9-11 条，彼此不重复，也不得与 search_locations 中的线索重复。`
 
+/** 升级模块三：难度口径（三档共用一份，口径来自 services/difficulty.ts） */
+export const DIFFICULTY_RULES = `【难度口径】
+本项目支持「轻松 / 标准 / 硬核」三档难度，调用方会在用户消息里写明本局难度。你必须按对应口径写作：
+${DIFFICULTIES.map((d) => `- ${d.label}：${d.brief}`).join('\n')}
+无论哪一档，凶手身份、真实死因、绝对时间线都必须唯一且自洽。难度只改变线索的深浅与暴露顺序，
+绝对不允许靠「制造逻辑矛盾」「让线索互相打架」「让凶手没有动机」来提高难度。`
+
 /** 系统指令全文 */
-export const SYSTEM_PROMPT = `【角色设定】
+export const SYSTEM_PROMPT = `【输出格式 · 最高优先级 · output json】
+你的回复有且只有一个 JSON 对象：第一个字符是 {，最后一个字符是 }。
+不要开场白、不要解释、不要结语，也不要用 Markdown 代码块包裹（不要出现 json 围栏）。不允许输出 JSON 以外的任何内容。
+
+【场景式剧本格式】
+你是剧本生成器，输出严格返回下面格式的JSON字符串，不要附带任何额外文字：
+{
+"title": "剧本标题",
+"roles": [{"name":"角色名字","desc":"人设"}],
+"story": "故事梗概",
+"scenes": [{"scene_name":"场景","dialogue":[{"role":"角色","content":"台词"}]}]
+}
+根据用户给的主题、人数生成剧本。
+（说明：上面这份“场景式”格式与下面“角色设定”要求的「完整剧本包」是两个互斥的接口。本游戏开局永远走完整剧本包结构；只有调用方在消息里明确说“按场景式剧本格式生成”时，才输出 title / roles / story / scenes，且两种结构绝不混用。）
+
+【角色设定】
 你现在是一个顶级的剧本杀游戏架构师兼主笔。你的核心任务是：根据用户提供的“玩家人数”和“题材”，动态生成一局逻辑严密、文笔沉浸、任务高度串联的剧本杀完整数据。
 
 【核心生成规则】
 - 动态适配：严格按照用户指定的 4-6 人数量生成角色。若为 5-6 人，必须增加边缘人物或增加线索复杂度，确保每个玩家都有事做。
 - 任务串联：所有角色的“表层任务”（隐藏小秘密）必须能在“集中陈述”环节产生交集或碰撞，绝不能出现逻辑死锁。
 - 高质量输出：每个角色的剧本必须包含丰富的心理活动、环境描写和第一人称的沉浸感，拒绝干瘪的大纲式描述。
+- 角色性别：每个角色都必须给出 gender 字段，只能是 "male" 或 "female"，且必须与姓名、身份、代际关系一致（例如「长女」「夫人」「女史」为 female，「长子」「将军」「内侍」为 male）；同局角色的性别要有搭配，不能全员同一性别。
 - 凶手特权：凶手的直觉提示必须是对其他玩家“表层任务”的模糊心理感知，绝对禁止直接暴露深层任务、作案手法或具体时间点。
 
 ${DYNAMIC_LENGTH_RULES}
 
 ${MULTI_ROUND_RULES}
+
+${DIFFICULTY_RULES}
 
 【输出格式要求】
 请严格且仅按照以下 JSON 结构输出你的设计，不要输出任何多余的寒暄或解释性废话：
@@ -133,9 +160,11 @@ export function buildUserPrompt(
   playerCount: number,
   theme: string,
   uniqueness?: UniquenessPromptContext,
+  difficulty?: unknown,
 ): string {
   const t = theme.trim() || '悬疑推理'
   const r = pacingFor(playerCount)
+  const diff = difficultyFor(difficulty)
   const recent = (uniqueness?.avoid ?? [])
     .slice(0, 10)
     .map((item, index) => `${index + 1}. 题材「${item.theme}」/ 凶手「${item.murderer}」`)
@@ -147,14 +176,16 @@ export function buildUserPrompt(
 ${recent || '暂无历史记录'}
 必须重新设计凶手、人物关系、核诡与关键物证；仅替换角色名或题材名不算新剧本。`
     : ''
-  return `开始游戏。玩家人数：${playerCount} 人。题材：${t}。
+  return `开始游戏。玩家人数：${playerCount} 人。题材：${t}。本局难度：${diff.label}。
 
 要求：
 1. 严格生成 ${playerCount} 个角色，其中恰好 1 名凶手。
 2. global_truth.murderer_name 必须等于凶手角色的 name。
 3. ${lengthRequirement(playerCount)}
+4. 所有角色的 name 必须互不相同：不得同名、不得复用同一个姓名；姓名必须是中文全名（姓+名），并且与最近案件的角色姓名组合有明显区别。
 5. 本局共 ${r.maxRounds} 轮${r.searchRounds > 0 ? `，每轮之后有一轮搜证` : '，线索由系统按轮次发放'}；请按【多轮节奏与线索分批发放】准备三批线索。
 6. 只输出 JSON，不要 markdown 代码块，不要任何解释文字。
+7. 难度口径（${diff.label}）：${diff.brief}
 ${uniqueRules}
 
 ${EXTENSION_INSTRUCTION}`

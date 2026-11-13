@@ -4,11 +4,12 @@ import { useRouter } from 'vue-router'
 import SheetModal from '@/components/SheetModal.vue'
 import { useToast } from '@/composables/useToast'
 import type { CustomScriptParseResult } from '@/services/customScripts'
+import { DIFFICULTIES, normalizeDifficulty } from '@/services/difficulty'
 import { TEMPLATES } from '@/services/templates'
 import { useCustomScriptsStore } from '@/stores/customScripts'
 import { useGameStore } from '@/stores/game'
 import { useSettingsStore } from '@/stores/settings'
-import type { ScriptPackage } from '@/types/script'
+import type { Difficulty, ScriptPackage } from '@/types/script'
 
 const emit = defineEmits<{
   (e: 'start-solo', pkg: ScriptPackage): void
@@ -28,6 +29,8 @@ const generationErrors = ref<string[]>([])
 const selectedId = ref(store.records[0]?.id ?? '')
 const aiTheme = ref('')
 const aiCount = ref(5)
+/** AI 按主题写剧本时的难度（跟开局页共用同一个默认档） */
+const aiDifficulty = ref<Difficulty>(settings.state.defaultDifficulty)
 
 const selected = computed(
   () => store.records.find((record) => record.id === selectedId.value) ?? store.records[0],
@@ -86,7 +89,7 @@ function downloadSample(): void {
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = '迷案-自定义剧本模板.json'
+  link.download = '谜案剧本杀-自定义剧本模板.json'
   link.click()
   URL.revokeObjectURL(url)
   toast.success('已下载 5 人剧本模板')
@@ -94,7 +97,12 @@ function downloadSample(): void {
 
 async function generateDraft(): Promise<void> {
   generationErrors.value = []
-  const result = await game.generateCustomDraft(aiTheme.value, aiCount.value)
+  const result = await game.generateCustomDraft(
+    aiTheme.value,
+    aiCount.value,
+    undefined,
+    normalizeDifficulty(aiDifficulty.value),
+  )
   if (!result.ok) {
     generationErrors.value = result.errors
     toast.error('剧本生成失败')
@@ -152,7 +160,7 @@ function dateText(value: number): string {
 
       <div v-if="store.records.length === 0" class="custom-scripts__empty">
         <p>剧本库还是空的</p>
-        <span>可以导入现成 JSON，或在下方让 AI 生成一份新剧本。</span>
+        <span>可以导入剧本文件或粘贴任意文本，或在下方让 AI 生成一份新剧本。</span>
       </div>
 
       <template v-else>
@@ -220,6 +228,20 @@ function dateText(value: number): string {
             </button>
           </div>
         </div>
+        <div>
+          <span class="custom-ai__label">剧本难度</span>
+          <div class="chips">
+            <button
+              v-for="d in DIFFICULTIES"
+              :key="d.id"
+              class="chip"
+              :class="{ 'chip--on': aiDifficulty === d.id }"
+              @click="aiDifficulty = d.id"
+            >
+              {{ d.label }}
+            </button>
+          </div>
+        </div>
         <button class="mini-btn" @click="router.push('/settings')">AI 设置</button>
       </div>
 
@@ -271,14 +293,14 @@ function dateText(value: number): string {
       <summary>导入 / 粘贴外部剧本</summary>
       <div class="custom-scripts__import-body">
         <div class="custom-scripts__actions">
-          <button class="mini-btn mini-btn--gold" @click="fileInput?.click()">导入 JSON</button>
+          <button class="mini-btn mini-btn--gold" @click="fileInput?.click()">导入文件</button>
           <button class="mini-btn" @click="pasteOpen = true">粘贴内容</button>
           <button class="mini-btn" @click="downloadSample">下载模板</button>
-          <input ref="fileInput" class="custom-scripts__file" type="file" accept=".json,application/json" @change="onFile" />
+          <input ref="fileInput" class="custom-scripts__file" type="file" @change="onFile" />
         </div>
 
         <div v-if="importErrors.length" class="custom-scripts__errors">
-          <strong>校验未通过</strong>
+          <strong>导入未完成</strong>
           <p v-for="error in importErrors.slice(0, 8)" :key="error">{{ error }}</p>
           <p v-if="importErrors.length > 8" class="tiny">另有 {{ importErrors.length - 8 }} 项错误未显示</p>
         </div>
@@ -287,18 +309,18 @@ function dateText(value: number): string {
     </details>
   </section>
 
-  <SheetModal :open="pasteOpen" title="粘贴自定义剧本 JSON" @close="pasteOpen = false">
+  <SheetModal :open="pasteOpen" title="粘贴自定义剧本" @close="pasteOpen = false">
     <p class="card__hint" style="margin-bottom: 10px">
-      必须包含 game_config、global_truth、roles、凶手特权与线索。导入时会执行完整结构、人数和字数校验。
+      不做格式校验，输入什么就存什么。能识别为剧本对象的会直接用于开局；其它文本原样保存，并套用内置模板骨架供试玩。
     </p>
     <textarea
       v-model="pasteText"
       class="textarea custom-scripts__paste"
-      placeholder='{ "game_config": { ... } }'
+      placeholder="在这里粘贴剧本内容（任意文本）"
       spellcheck="false"
     />
     <button class="btn btn--primary" :disabled="!pasteText.trim()" @click="savePaste">
-      校验并保存
+      保存
     </button>
   </SheetModal>
 </template>

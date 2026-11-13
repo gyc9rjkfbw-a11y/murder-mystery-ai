@@ -5,7 +5,7 @@
  * 完全同构（同一套模板、同一套字数自检、同一套扩展字段兜底）。
  */
 
-import type { ScriptPackage } from '@/types/script'
+import type { Difficulty, ScriptPackage } from '@/types/script'
 import { generateOfflineScript } from '@/services/offlineEngine'
 import { validateScriptPackage } from '@/services/validator'
 
@@ -19,8 +19,9 @@ export interface BuildScriptResult {
 export async function buildScriptPackage(
   playerCount: number,
   theme: string,
+  difficulty?: Difficulty,
 ): Promise<BuildScriptResult> {
-  const raw = await generateOfflineScript({ playerCount, theme, stepDelay: 0 })
+  const raw = await generateOfflineScript({ playerCount, theme, difficulty, stepDelay: 0 })
   const result = validateScriptPackage(raw, playerCount)
   if (!result.ok || !result.data) {
     return { ok: false, pkg: null, errors: result.errors }

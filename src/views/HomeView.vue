@@ -40,15 +40,15 @@ function enterGame() {
 </script>
 
 <template>
-  <AppTopBar title="迷案" sub="AI 剧本杀" show-settings />
+  <AppTopBar title="谜案剧本杀" show-settings />
 
   <main class="page home-menu-page">
     <InstallBanner />
 
     <section class="home-menu-hero">
-      <BrandMark class="home-menu-hero__mark" animated label="迷案游戏标志" />
+      <BrandMark class="home-menu-hero__mark" animated label="谜案剧本杀游戏标志" />
       <div class="home-menu-hero__kicker">AN AI MURDER MYSTERY</div>
-      <h1>迷案</h1>
+      <h1>谜案剧本杀</h1>
       <p>NO BODY, NO TRUTH</p>
     </section>
 
@@ -58,7 +58,7 @@ function enterGame() {
         <strong>{{ playerName }}</strong>
         <span>已进行 {{ gamesPlayed }} 局 · 胜率 {{ winRate }}%</span>
       </div>
-      <button class="mini-btn" @click="router.push('/settings')">档案</button>
+      <button class="mini-btn" @click="router.push('/me')">档案</button>
     </section>
 
     <section class="home-menu-actions">
@@ -74,7 +74,7 @@ function enterGame() {
     </section>
 
     <p class="home-menu-foot">
-      4-6 人 AI 剧本杀 · 单机试玩 / 联机房间 / 语音与公屏
+      4-6 人剧本杀 · 单机试玩 / 联机房间 / 语音与公屏
     </p>
   </main>
 </template>

@@ -1,4 +1,4 @@
-import type { ClueBatch, Role, ScriptPackage, ValidationResult } from '@/types/script'
+import type { ClueBatch, Gender, Role, ScriptPackage, ValidationResult } from '@/types/script'
 import { CLUE_TIER_LABELS, pacingFor, scriptLength } from './rules'
 
 /**
@@ -12,7 +12,7 @@ import { CLUE_TIER_LABELS, pacingFor, scriptLength } from './rules'
  *   2. 角色数 == game_config.player_count == 房间人数
  *   3. 恰好一名凶手，且 global_truth.murderer_name 指向他/她
  *   4. 每个角色的 full_script / surface_task / deep_task / personal_timeline 非空
- *   5. **字数自检**：按人数执行 1500-1900 / 1900-2400 / 2300-2800 的硬性字数区间，
+ *   5. **字数自检**：按人数执行 1500-2200 / 1900-2900 / 2300-3300 的硬性字数区间，
  *      超出即拦截（线上引擎会据此自动要求 AI 重写）
  *   6. 6 人局每个角色必须有独立支线任务（防边缘化）
  *   7. 凶手特权不得直接点名凶手（模糊度检查）
@@ -107,7 +107,7 @@ export function validateScriptPackage(
       if (!isNonEmptyString(r?.full_script)) {
         errors.push(`${tag}.full_script 缺失`)
       } else {
-        // 字数自检：4 人 1500-1900 / 5 人 1900-2400 / 6 人 2300-2800
+        // 字数自检：4 人 1500-2200 / 5 人 1900-2900 / 6 人 2300-3300
         const len = scriptLength(r.full_script)
         if (len > rule.scriptMax) {
           errors.push(
@@ -131,6 +131,17 @@ export function validateScriptPackage(
           )
         }
       }
+    })
+
+    // 每个角色必须有唯一姓名：重名会让「死者是谁」「谁在说话」彻底混乱
+    const seenNames = new Set<string>()
+    roles.forEach((r) => {
+      const name = typeof r?.name === 'string' ? r.name.trim() : ''
+      if (!name) return
+      if (seenNames.has(name)) {
+        errors.push(`角色姓名重复：${name}。本局每个角色必须有不同的姓名`)
+      }
+      seenNames.add(name)
     })
 
     const murderers = roles.filter((r) => r?.is_murderer === true)
@@ -173,6 +184,18 @@ export function validateScriptPackage(
 }
 
 /**
+ * 性别归一化：模型可能返回 male / female，也可能返回「男 / 女」，
+ * 统一成协议里的值。识别不了的返回 undefined，
+ * 前端会按身份与姓名兜底推断，头像不会空着。
+ */
+export function normalizeGender(value: unknown): Gender | undefined {
+  const v = String(value ?? '').trim().toLowerCase()
+  if (v === 'female' || v === '女' || v === 'f' || v === 'woman' || v === 'girl') return 'female'
+  if (v === 'male' || v === '男' || v === 'm' || v === 'man' || v === 'boy') return 'male'
+  return undefined
+}
+
+/**
  * 规范化：补齐扩展字段。
  * 真实大模型可能不返回 clue_batches / private_clues / search_locations，
  * 这里自动兜底，保证轮次推进与「自由搜证」环节永远可玩。
@@ -183,6 +206,7 @@ export function normalizeScriptPackage(pkg: ScriptPackage): ScriptPackage {
     game_config: { ...pkg.game_config, player_count: pkg.roles.length },
     roles: pkg.roles.map((r, i) => ({
       ...r,
+      gender: normalizeGender((r as { gender?: unknown }).gender),
       is_murderer: r.is_murderer === true || (pkg.global_truth?.murderer_name === r.name && i === 0),
       side_quests: Array.isArray(r.side_quests) ? [...r.side_quests] : [],
     })),

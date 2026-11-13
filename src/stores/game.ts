@@ -8,13 +8,19 @@ import {
 } from '@/services/aiEngine'
 import { makeBotStatement, makeBotVoteTarget } from '@/services/bots'
 import {
+  DEFAULT_DIFFICULTY,
+  difficultyFor,
+  normalizeDifficulty,
+  pacingForDifficulty,
+} from '@/services/difficulty'
+import {
   CLUE_TIER_LABELS,
   pacingFor,
   roundTheme,
   type PacingRule,
   type RoundTheme,
 } from '@/services/rules'
-import type { ClueItem, Role, ScriptPackage } from '@/types/script'
+import type { ClueItem, Difficulty, Role, ScriptPackage } from '@/types/script'
 import { validateScriptPackage } from '@/services/validator'
 import {
   AVATARS,
@@ -140,6 +146,8 @@ export const useGameStore = defineStore('game', () => {
   const setup = reactive({
     playerCount: 5,
     theme: '民国·远洋邮轮谋杀案',
+    /** 本局难度：只影响节奏与线索时序，不改凶手与真相 */
+    difficulty: DEFAULT_DIFFICULTY as Difficulty,
     played: false,
   })
 
@@ -162,7 +170,12 @@ export const useGameStore = defineStore('game', () => {
 
   // ---------------------------------------------------------------- getters
 
-  const rule = computed<PacingRule>(() => pacingFor(setup.playerCount))
+  const rule = computed<PacingRule>(() =>
+    pacingForDifficulty(setup.playerCount, setup.difficulty),
+  )
+
+  /** 本局难度的完整口径（界面展示用） */
+  const difficultyMeta = computed(() => difficultyFor(setup.difficulty))
 
   const selfSeat = computed<Seat | undefined>(() =>
     state.seats.find((s) => s.id === state.selfSeatId),
@@ -466,11 +479,12 @@ export const useGameStore = defineStore('game', () => {
   }
 
   /** 创建房间：座位 = 我 + (人数-1) 个本地模拟玩家 */
-  function createRoom(playerCount: number, theme: string) {
+  function createRoom(playerCount: number, theme: string, difficulty?: unknown) {
     resetAll()
     const r = pacingFor(playerCount)
     setup.playerCount = r.playerCount
     setup.theme = theme
+    setup.difficulty = normalizeDifficulty(difficulty ?? settings.state.defaultDifficulty)
     state.godMode = settings.state.demoMode
     state.roomCode = makeRoomCode()
     state.selfSeatId = 'self'
@@ -503,6 +517,50 @@ export const useGameStore = defineStore('game', () => {
     setPhase('room')
   }
 
+  /**
+   * 复盘后「返回房间」（单机）：房号、座位、题材都留着，只把这一局清干净。
+   * ------------------------------------------------------------------
+   * 和联机时服务端 `restart(keep)` 是同一套口径：座位表原样保留、
+   * 角色解绑、真人重新准备，回到 /room 就能直接再开一局。
+   * 联机时这一步由服务器完成，客户端不调用这里。
+   */
+  function backToRoom() {
+    state.script = null
+    state.murdererSeatId = null
+    state.releasedTiers = []
+    state.roundSummaries = []
+    state.accelerateSuggested = false
+    state.accelerateReason = ''
+    state.privilege = null
+    state.statements = []
+    state.statementIndex = 0
+    state.clues = []
+    state.searchLeft = 0
+    state.notes = ''
+    state.votes = []
+    state.strawPoll = []
+    state.settlement = []
+    state.detectiveHints = 0
+    state.onlineTurnSeatId = null
+    state.readingRoleIndex = 0
+    state.round = 1
+    // 角色解绑 + 准备状态复位：大厅里不该再显示上一局的身份
+    state.seats = state.seats.map((s) => ({
+      id: s.id,
+      name: s.name,
+      avatar: s.avatar,
+      isSelf: s.isSelf,
+      isBot: s.isBot,
+      ready: s.isSelf || s.isBot,
+      readConfirmed: false,
+      alive: true,
+    }))
+    roundStartedAt.at = 0
+    hintRounds.length = 0
+    setup.played = false
+    setPhase('room')
+  }
+
   /** 直接使用导入的自定义剧本开局，跳过 AI 生成与下发阶段。 */
   function startCustomScript(pkg: ScriptPackage): { ok: boolean; errors: string[] } {
     const checked = validateScriptPackage(pkg, pkg.roles.length)
@@ -511,8 +569,11 @@ export const useGameStore = defineStore('game', () => {
     }
 
     const data = checked.data
-    createRoom(data.roles.length, data.game_config.theme)
-    state.script = data
+    // 自定义剧本以剧本自带的难度为准；作者没标就跟玩家这次选的那档
+    const difficulty = normalizeDifficulty(data.game_config.difficulty ?? setup.difficulty)
+    createRoom(data.roles.length, data.game_config.theme, difficulty)
+    // 线索批次保持作者原样（只盖难度戳），不替作者搬线索
+    state.script = { ...data, game_config: { ...data.game_config, difficulty } }
     assignRoles(data)
     state.clues = buildClues(data)
     state.statements = []
@@ -547,6 +608,7 @@ export const useGameStore = defineStore('game', () => {
     theme: string,
     playerCount: number,
     offlineStepDelayMs?: number,
+    difficulty?: unknown,
   ): Promise<GenerationResult> {
     const ai = settings.state.ai
     if (ai.provider === 'openai' && !String(ai.apiKey ?? '').trim()) {
@@ -561,6 +623,7 @@ export const useGameStore = defineStore('game', () => {
     const result = await generateScript({
       playerCount,
       theme,
+      difficulty: difficultyFor(difficulty ?? setup.difficulty).id,
       config: { ...ai },
       uniqueness: {
         nonce:
@@ -582,6 +645,7 @@ export const useGameStore = defineStore('game', () => {
     theme: string,
     playerCount: number,
     offlineStepDelayMs?: number,
+    difficulty?: unknown,
   ): Promise<{ ok: boolean; pkg?: ScriptPackage; errors: string[]; warnings: string[] }> {
     if (!theme.trim()) return { ok: false, errors: ['请先填写剧本主题'], warnings: [] }
     if (generating.busy) return { ok: false, errors: ['已有剧本正在生成'], warnings: [] }
@@ -594,7 +658,7 @@ export const useGameStore = defineStore('game', () => {
     customDraft.value = null
 
     try {
-      const result = await runGeneration(theme.trim(), count, offlineStepDelayMs)
+      const result = await runGeneration(theme.trim(), count, offlineStepDelayMs, difficulty)
       customDraft.value = result.pkg
       generating.provider = result.provider
       generating.rewrites = result.rewrites
@@ -631,7 +695,7 @@ export const useGameStore = defineStore('game', () => {
     setPhase('dealing')
 
     try {
-      const result = await runGeneration(setup.theme, setup.playerCount)
+      const result = await runGeneration(setup.theme, setup.playerCount, undefined, setup.difficulty)
       state.script = result.pkg
       generating.provider = result.provider
       generating.rewrites = result.rewrites
@@ -1101,6 +1165,8 @@ export const useGameStore = defineStore('game', () => {
     state.selfSeatId = v.self.seatId
     state.godMode = false
     state.script = v.script
+    // 联机时难度以服务器为准（服务器已经按它生成剧本、安排时长）
+    setup.difficulty = normalizeDifficulty(v.difficulty ?? v.script.game_config.difficulty)
     state.readingRoleIndex = Math.max(
       0,
       v.script.roles.findIndex((r) => r.name === v.self.roleName),
@@ -1249,6 +1315,7 @@ export const useGameStore = defineStore('game', () => {
     roundStartedAt,
     // getters
     rule,
+    difficultyMeta,
     selfSeat,
     selfRole,
     selfRoleIndex,
@@ -1281,6 +1348,7 @@ export const useGameStore = defineStore('game', () => {
     setPhase,
     resetAll,
     createRoom,
+    backToRoom,
     startCustomScript,
     generateCustomDraft,
     joinRoom,

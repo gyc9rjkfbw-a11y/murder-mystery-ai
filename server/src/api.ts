@@ -3,9 +3,9 @@
  * ==================================================================
  * 和房间服务同端口，走 `/api/*`：
  *
- *   GET  /api/health                  服务器与档案库健康状况（只读）
+ *   GET  /api/health                  服务器与玩家数据库健康状况（只读）
  *   GET  /api/profile?id=<玩家ID>      读一个档案（不存在返回 profile:null）
- *   PUT  /api/profile                 写昵称 / 头像 / AI 偏好（其余字段一律忽略）
+ *   PUT  /api/profile                 写昵称 / 头像 / AI 偏好 / 偏好题材（其余字段一律忽略）
  *
  * 几条硬规则：
  *   - **只认 JSON**，请求体有上限（`PROFILE_LIMITS.bodyBytes`），超了 413；
@@ -19,6 +19,7 @@
  */
 
 import type http from 'node:http'
+import path from 'node:path'
 import { PROFILE_LIMITS, normalizePlayerId, type PlayerProfile, type ProfileStore } from './store'
 
 export interface ApiDeps {
@@ -184,9 +185,26 @@ export function createApiHandler(deps: ApiDeps): (req: http.IncomingMessage, res
       reply(res, 200, {
         ok: true,
         version,
+        // —— 前四个是老字段，自检脚本与运维面板都在用，保持不变 ——
         profileCount: snapshot.profileCount,
         fileBytes: snapshot.fileBytes,
         writes: snapshot.writes,
+        // —— 数据库信息：一眼能看出用的是 SQLite、结构版本、对局数与完整性 ——
+        db: {
+          engine: snapshot.engine,
+          file: path.basename(snapshot.filePath),
+          schemaVersion: snapshot.schemaVersion,
+          games: snapshot.games,
+          backupBytes: snapshot.backupBytes,
+          integrity: snapshot.integrity.ok ? 'ok' : 'issues',
+        },
+        integrity: {
+          ok: snapshot.integrity.ok,
+          checkedAt: snapshot.integrity.checkedAt,
+          foreignKeyIssues: snapshot.integrity.foreignKeyIssues,
+          statMismatches: snapshot.integrity.statMismatches.length,
+          issues: snapshot.integrity.issues,
+        },
         uptimeMs: now() - startedAt,
         now: now(),
       })
@@ -258,7 +276,7 @@ export function createApiHandler(deps: ApiDeps): (req: http.IncomingMessage, res
         }
         ai = obj
       }
-      const profile = store.upsert({ id, name: body.name, avatar: body.avatar, ai })
+      const profile = store.upsert({ id, name: body.name, avatar: body.avatar, ai, genres: body.genres })
       if (!profile) {
         reply(res, 400, { error: 'bad-id', message: '玩家 ID 不合法' })
         return
